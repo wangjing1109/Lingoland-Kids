@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Lingoland Kids · 儿童英语闯关</title>
-<link rel="stylesheet" href="assets/fonts.css?v=20260912">
-<link rel="stylesheet" href="assets/app.css?v=20260912">
+<link rel="stylesheet" href="assets/fonts.css?v=20260920">
+<link rel="stylesheet" href="assets/app.css?v=20260920">
 </head>
 <body>
 
@@ -213,6 +213,12 @@
         <div class="pr-item pr-item--whack"  data-act="practice" data-type="whack">
           <span class="pr-item__ico">🐹</span><span class="pr-item__n">打地鼠</span>
         </div>
+        <div class="pr-item pr-item--tdef"   data-act="practice" data-type="tdef">
+          <span class="pr-item__ico">🛡️</span><span class="pr-item__n">单词塔防</span>
+        </div>
+        <div class="pr-item pr-item--farm"   data-act="practice" data-type="farm">
+          <span class="pr-item__ico">🌱</span><span class="pr-item__n">单词农场</span>
+        </div>
         <div class="pr-item pr-item--exam"   data-act="practice" data-type="exam">
           <span class="pr-item__ico">📝</span><span class="pr-item__n">真题演练</span>
         </div>
@@ -243,6 +249,7 @@
         <b style="font-family:var(--f-display);font-size:15px">怎么解锁下一个词库？</b>
         <p style="margin-top:6px;font-size:12.5px;font-weight:700;color:var(--c-ink-70);line-height:1.7">
           学单词 +1 ⭐ · 听力/练习答对 +2 ⭐ · 跟读满分 +5 ⭐ · 完成今日目标 +50 ⭐。<br>
+          🐹 打地鼠过关 +3 ⭐ · 🛡️ 塔防守住基地 +3 ⭐ · 🌱 农场收获 1 个 +3 ⭐。<br>
           攒够星星就能自动解锁下一级词库，逐级晋级：小升初 → 初中核心 → 初中全量 → 高中核心 → 高中全量。
         </p>
       </div>
@@ -254,8 +261,7 @@
 
       <div class="q-prog" style="margin-top:var(--sp-3)">
         <svg style="width:20px;height:20px;flex:none"><use href="#i-cards"/></svg>
-        <div class="bar"><div class="bar__fill" id="fcBar" style="--pct:0%"></div></div>
-        <b id="fcIdx">1 / 20</b>
+        <b style="flex:1">想学多少学多少 · 点「认识了」继续下一张</b>
       </div>
 
       <div class="fc-wrap">
@@ -283,7 +289,7 @@
       </div>
 
       <div class="card card--sticker" style="margin-top:var(--sp-4);text-align:center">
-        <div style="font-size:13px;font-weight:800;color:var(--c-ink-70)">本轮进度</div>
+        <div style="font-size:13px;font-weight:800;color:var(--c-ink-70)">今天已学</div>
         <div style="margin-top:8px;font-family:var(--f-display);font-size:15px">
           认识了 <b id="fcKnow" style="color:var(--c-sky)">0</b> · 还要练 <b id="fcAgain" style="color:var(--c-coral)">0</b>
         </div>
@@ -520,6 +526,204 @@
         <button class="btn btn--ghost" data-act="whack-again">🔁 再来一局</button>
         <button class="btn btn--lav" data-act="whack-pick">🎨 换主题</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词塔防 · 选关
+       ============================================================ -->
+  <div class="ov" id="ovTdefStart">
+    <div class="ov__bar">
+      <div class="ov__x" data-act="tdef-quit"><svg><use href="#i-close"/></svg></div>
+      <b>🛡️ 单词塔防</b>
+    </div>
+    <div class="ov__body">
+      <p class="wh-sub">① 选词库（按学习进度解锁）</p>
+      <div class="wh-chips" id="tdDecks"></div>
+      <p class="wh-sub">② 每局单词数量</p>
+      <div class="wh-chips" id="tdCounts"></div>
+      <p class="wh-sub">③ 选难度</p>
+      <div class="wh-chips" id="tdDiffs"></div>
+      <p class="wh-sub">④ 游戏发音设置（拼对后朗读 + 显示中文释义）</p>
+      <div class="td-set">
+        <div class="td-set__row">
+          <span class="td-set__t">🔊 消灭时发音</span>
+          <span class="sw is-on" data-act="tdef-voice" data-sw="voiceOn"></span>
+        </div>
+        <div class="td-set__row td-set__row--vol">
+          <span class="td-set__t">🔈 音量</span>
+          <input type="range" min="0" max="100" value="80" id="tdVol" class="td-set__vol" />
+          <b id="tdVolVal">80%</b>
+        </div>
+      </div>
+      <button class="btn btn--coral btn--lg" data-act="tdef-go">▶ 开始守塔</button>
+      <p class="wh-hint">敌人带着英文单词沿路进攻基地，<b>拼对单词拼写</b>就能发射炮弹消灭它！拼错攻击无效，敌人还会加速冲撞。守住基地、连击拿高分 🛡️</p>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词塔防 · 进行中
+       ============================================================ -->
+  <div class="ov" id="ovTdef">
+    <div class="ov__bar">
+      <div class="ov__x" data-act="tdef-quit"><svg><use href="#i-close"/></svg></div>
+      <b>🛡️ 单词塔防</b>
+      <span class="chip chip--coral" id="tdScore">0 分</span>
+    </div>
+    <div class="ov__body">
+      <div class="td-top">
+        <div class="td-hp"><span>❤️ 基地</span><div class="td-hp__bar"><div class="td-hp__fill" id="tdHp"></div></div></div>
+        <div class="td-wave"><b id="tdWave">第 1 波</b><span id="tdWaveN">0/0</span></div>
+      </div>
+      <div class="td-field" id="tdField">
+        <svg class="td-path" viewBox="0 0 100 100" preserveAspectRatio="none" id="tdPathSvg"><path id="tdPath" d=""/></svg>
+        <div class="td-base" id="tdBase">🏰</div>
+        <div class="td-mean" id="tdMean" aria-hidden="true"></div>
+      </div>
+      <div class="td-target">🎯 当前目标：<b id="tdTarget">--</b></div>
+      <div class="td-input">
+        <input id="tdInput" class="td-input__el" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="输入英文拼写…" />
+        <button class="btn btn--sky btn--sm" data-act="tdef-fire">🚀 发射</button>
+      </div>
+      <div class="td-foot">
+        <span class="chip" id="tdCombo"></span>
+        <button class="btn btn--ghost btn--sm" data-act="tdef-pause">⏸ 暂停</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词塔防 · 暂停
+       ============================================================ -->
+  <div class="ov ov--center" id="ovTdefPause">
+    <div class="ov__body" style="text-align:center">
+      <div style="font-size:40px;margin-bottom:8px">⏸️</div>
+      <h3 style="font-family:var(--f-display);font-size:22px;margin-bottom:14px">已暂停</h3>
+      <button class="btn btn--coral btn--lg" data-act="tdef-resume">▶ 继续游戏</button>
+      <button class="btn btn--ghost" data-act="tdef-quit" style="margin-top:10px">退出本局</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词塔防 · 结算（家长可见）
+       ============================================================ -->
+  <div class="ov" id="ovTdefResult">
+    <div class="ov__bar">
+      <div class="ov__x" data-act="tdef-quit"><svg><use href="#i-close"/></svg></div>
+      <b>🏆 本局成绩</b>
+    </div>
+    <div class="ov__body">
+      <div class="wh-final" id="tdFinal"></div>
+      <p class="wh-sub">✅ 消灭的单词（已计入学习进度）</p>
+      <div class="wh-words" id="tdWords"></div>
+      <p class="wh-sub">📚 拼错的单词（已加入复习列表）</p>
+      <div class="wh-words" id="tdWrongWords"></div>
+      <div class="wh-res-btns">
+        <button class="btn btn--ghost" data-act="tdef-again">🔁 再来一局</button>
+        <button class="btn btn--lav" data-act="tdef-pick">🎨 换词库</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词农场 · 主界面（田地网格）
+       ============================================================ -->
+  <div class="ov" id="ovFarm">
+    <div class="ov__bar">
+      <div class="ov__x" data-act="farm-quit"><svg><use href="#i-close"/></svg></div>
+      <b>🌱 单词农场</b>
+      <span class="chip chip--mint" id="fmStreak">🔥 0 天</span>
+    </div>
+    <div class="ov__body">
+      <div class="fm-sum" id="fmSum"></div>
+      <div class="fm-daily" id="fmDaily"></div>
+      <div class="fm-grid" id="farmGrid"></div>
+      <div class="fm-acts">
+        <button class="btn btn--sky btn--sm" data-act="farm-plant">🌱 种新词</button>
+        <button class="btn btn--coral btn--sm" data-act="farm-water">💧 去浇水</button>
+        <button class="btn btn--lav btn--sm" data-act="farm-stats">📊 统计</button>
+        <button class="btn btn--ghost btn--sm" data-act="farm-manage">⚙️ 管理</button>
+      </div>
+      <p class="wh-hint">把生词种下去 🌱，完成<b>复习任务</b>就能浇水成长：种子 → 发芽 → 幼苗 → 开花 → 成熟 🍎。太久没浇水的作物会枯萎，浇一次就能复活！</p>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词农场 · 种植新词
+       ============================================================ -->
+  <div class="ov ov--center" id="ovFarmPlant">
+    <div class="ov__body">
+      <div style="font-size:38px;text-align:center;margin-bottom:6px">🌱</div>
+      <h3 style="font-family:var(--f-display);font-size:20px;text-align:center;margin-bottom:4px">种下一个新单词</h3>
+      <p class="fm-sub">🎲 已从「当前词库」随机为你选好一个还没种过的词</p>
+      <div class="fm-pick">
+        <span class="fm-pick__emo" id="fmPickEmo">🌱</span>
+        <span class="fm-pick__txt">
+          <b id="fmEn"></b>
+          <i id="fmCn"></i>
+        </span>
+      </div>
+      <div id="fmErr" class="fm-err"></div>
+      <button class="btn btn--sky btn--block" id="fmDraw" data-act="farm-draw">🎲 换一个</button>
+      <button class="btn btn--coral btn--block" style="margin-top:10px" data-act="farm-doplant">🌱 就种它</button>
+      <button class="btn btn--ghost btn--block" style="margin-top:10px" data-act="farm-close">取消</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词农场 · 浇水复习
+       ============================================================ -->
+  <div class="ov" id="ovFarmWater">
+    <div class="ov__bar">
+      <div class="ov__x" data-act="farm-close"><svg><use href="#i-close"/></svg></div>
+      <b>💧 浇水复习</b>
+      <span class="chip chip--sky" id="fmProg">0/0</span>
+    </div>
+    <div class="ov__body">
+      <div class="fm-plant" id="fmPlant"></div>
+      <div class="fm-drop" id="fmDrop">💧</div>
+      <div class="fm-q" id="fmQ"></div>
+      <div class="fm-opts" id="fmOpts"></div>
+      <div class="fm-spell" id="fmSpell" style="display:none">
+        <input id="fmIn" class="td-input__el" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="输入英文拼写…" />
+        <button class="btn btn--sky btn--sm" data-act="farm-ans">✅ 提交</button>
+      </div>
+      <div class="fm-fb" id="fmFb"></div>
+      <button class="btn btn--coral" data-act="farm-next" id="fmNext" style="display:none">继续 →</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词农场 · 统计面板
+       ============================================================ -->
+  <div class="ov" id="ovFarmStats">
+    <div class="ov__bar">
+      <div class="ov__x" data-act="farm-close"><svg><use href="#i-close"/></svg></div>
+      <b>📊 农场统计</b>
+    </div>
+    <div class="ov__body">
+      <div class="fm-stat" id="fmStat"></div>
+      <p class="wh-sub">📈 最近 14 天学习曲线</p>
+      <div class="fm-chart" id="fmChart"></div>
+      <p class="wh-sub">🍎 收获记录</p>
+      <div class="wh-words" id="fmHarvests"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       覆盖层 · 单词农场 · 管理（增删改 + 批量导入）
+       ============================================================ -->
+  <div class="ov" id="ovFarmManage">
+    <div class="ov__bar">
+      <div class="ov__x" data-act="farm-close"><svg><use href="#i-close"/></svg></div>
+      <b>⚙️ 管理田地</b>
+    </div>
+    <div class="ov__body">
+      <p class="wh-sub">📥 批量导入（每行一个：英文,中文）</p>
+      <textarea id="fmImport" class="fm-ta" rows="5" placeholder="apple,苹果&#10;banana,香蕉&#10;orange,橙子"></textarea>
+      <button class="btn btn--sky btn--block" data-act="farm-import">导入这批单词</button>
+      <p class="wh-sub">🌱 我的作物（可编辑 / 删除）</p>
+      <div id="fmList"></div>
     </div>
   </div>
 
@@ -787,12 +991,13 @@
 <!-- Toast 层 -->
 <div id="toastLayer"></div>
 
-<script src="assets/voice.js?v=20260912"></script>
-<script src="assets/celebrate.js?v=20260912"></script>
-<script src="assets/emoji-map.js?v=20260912"></script>
-<script src="assets/words.js?v=20260912"></script>
-<script src="assets/qbank.js?v=20260912"></script>
-<script src="assets/app.js?v=20260912"></script>
+<script src="assets/voice.js?v=20260920"></script>
+<script src="assets/celebrate.js?v=20260920"></script>
+<script src="assets/emoji-map.js?v=20260920"></script>
+<script src="assets/words.js?v=20260920"></script>
+<script src="assets/qbank.js?v=20260920"></script>
+<script src="assets/meanings.js?v=20260920"></script>
+<script src="assets/app.js?v=20260920"></script>
 
 </body>
 </html>

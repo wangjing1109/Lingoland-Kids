@@ -66,7 +66,7 @@ var DEF = {
   td: 0, tds: 0, tdDate: '', goalHit: false,
   checkin: { dates: [], patched: [], last: '' }, wish: null,
   pos: {}, learned: {}, master: {}, wrong: [], badges: {}, hist: {},
-  cfg: { sound: 1, remind: 1, rate: 0.85 },
+  cfg: { sound: 1, remind: 1, rate: 0.85, voiceOn: 1, voiceVol: 0.8 },
   stat: { learn: 0, listen: 0, speak: 0, spell: 0, vocab: 0, gram: 0, phrase: 0, match: 0, exam: 0, wrev: 0, perfect: 0, right: 0, total: 0 },
   profile: { name: 'Leo', avatar: '🦁' },
   matchLevel: 1
@@ -146,6 +146,23 @@ function findWord(k, w) {
   if (!m) { m = IDX[k] = {}; d.w.forEach(function (x) { if (!(x[0] in m)) m[x[0]] = x; }); }
   return m[w] || null;
 }
+
+/* 取单词的中文释义（最多 2 条，多义词取最常用的）。
+   优先用外部释义词库 LL_MEANINGS（assets/meanings.js），
+   不在外部词库时回退到 words.js 自带单释义。 */
+function meaningOf(en) {
+  en = String(en || '').toLowerCase();
+  if (window.LL_MEANINGS && LL_MEANINGS[en]) {
+    var arr = LL_MEANINGS[en];
+    if (Array.isArray(arr)) return arr.slice(0, 2);
+    return [String(arr)].slice(0, 2);
+  }
+  for (var k in DMAP) {
+    var f = findWord(k, en);
+    if (f && f[1]) return [f[1]];
+  }
+  return [];
+}
 function newWords(n) {
   var d = deck(), out = [], L = d.w.length; if (!L) return out;
   var p = S.pos[d.k] || 0;
@@ -184,6 +201,172 @@ function mLearn(k, w, src) {
   S.master[key] = m; save();
 }
 function canReview(m) { return (m.src || 'learn') === 'learn'; }
+
+/* ================================================================
+   单词农场 🌱 —— 把生词种成作物，复习即浇水，成熟即收获
+   ================================================================ */
+var FM_STAGE = ['🌱 种子', '🌿 发芽', '🪴 幼苗', '🌸 开花', '🍎 成熟'];
+var FM_EMO   = ['🌱', '🌿', '🪴', '🌸', '🍎'];
+var FM_EXP   = [0, 20, 45, 75, 100];   /* 各阶段起始经验 */
+var FM_GAIN  = 12;                     /* 每次正确复习 +12 exp */
+var FM_DAYS  = 3;                      /* 超过 3 天未复习则枯萎 */
+
+function todayStr() {
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function dayDiff(a, b) {
+  /* 相差天数（b - a），按本地零点计算 */
+  function p(s) { var t = String(s || '').split('-'); return new Date(+t[0], (+t[1] || 1) - 1, +t[2] || 1).getTime(); }
+  return Math.round((p(b) - p(a)) / 864e5);
+}
+function fmStage(exp) {
+  var s = 0;
+  for (var i = 0; i < FM_EXP.length; i++) if (exp >= FM_EXP[i]) s = i;
+  return s;
+}
+function fmFarm() {
+  if (!S.farm || typeof S.farm !== 'object') S.farm = {};
+  var F = S.farm;
+  if (!Array.isArray(F.plots)) F.plots = [];
+  if (typeof F.wiltDays !== 'number') F.wiltDays = FM_DAYS;
+  if (!F.daily || typeof F.daily !== 'object') F.daily = { date: '', watered: 0, goal: 5, harvested: 0 };
+  if (!F.history || typeof F.history !== 'object') F.history = {};
+  if (!Array.isArray(F.harvests)) F.harvests = [];
+  /* 每日任务跨天重置 */
+  var t = todayStr();
+  if (F.daily.date !== t) { F.daily.date = t; F.daily.watered = 0; F.daily.harvested = 0; }
+  /* 枯萎状态刷新 */
+  F.plots.forEach(function (p) {
+    if (p.stage >= 4) { p.status = 'ripe'; return; }
+    var gap = p.lastReview ? dayDiff(p.lastReview, t) : 0;
+    p.status = (gap > F.wiltDays) ? 'wilt' : 'growing';
+  });
+  return F;
+}
+function fmPlot(id) {
+  var F = fmFarm();
+  for (var i = 0; i < F.plots.length; i++) if (F.plots[i].id === id) return F.plots[i];
+  return null;
+}
+/* 选择下一个该浇水的作物：枯萎优先，其次最久未复习，再次经验最少 */
+function fmNeedWater() {
+  var F = fmFarm(), t = todayStr();
+  var list = F.plots.filter(function (p) { return p.stage < 4; });
+  if (!list.length) return null;
+  list.sort(function (a, b) {
+    var aw = a.status === 'wilt' ? 0 : 1, bw = b.status === 'wilt' ? 0 : 1;
+    if (aw !== bw) return aw - bw;
+    var ad = a.lastReview ? dayDiff(a.lastReview, t) : 99;
+    var bd = b.lastReview ? dayDiff(b.lastReview, t) : 99;
+    if (ad !== bd) return bd - ad;
+    return a.exp - b.exp;
+  });
+  return list[0];
+}
+function fmStreak() {
+  var F = fmFarm(), n = 0, d = new Date();
+  for (var i = 0; i < 400; i++) {
+    var k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    if (F.history[k]) n++;
+    else if (i > 0) break;      /* 今天还没浇水不算断 */
+    d = new Date(d.getTime() - 864e5);
+  }
+  return n;
+}
+function fmPlantWord(en, cn) {
+  en = String(en || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  cn = String(cn || '').trim();
+  if (!en) return { ok: false, msg: '请输入英文单词' };
+  if (!/^[a-z][a-z\-' ]*$/i.test(en)) return { ok: false, msg: '英文单词格式不正确' };
+  if (!cn) return { ok: false, msg: '请输入中文释义' };
+  var F = fmFarm();
+  if (F.plots.some(function (p) { return p.en === en; })) return { ok: false, msg: '这个单词已经种过啦' };
+  var w = findWord(S.deck, en) || findWord('primary', en);
+  var emo = '🌱';
+  try { if (w) emo = emoOf(w) || '🌱'; } catch (e) {}
+  var t = todayStr();
+  F.plots.push({
+    id: 'p' + Date.now() + '_' + rnd(9999),
+    en: en, cn: cn, ipa: (w && w[2]) || '', emo: emo,
+    stage: 0, exp: 0, plantedAt: t, lastReview: t,
+    reviews: 0, right: 0, wrong: 0, status: 'growing'
+  });
+  save();
+  return { ok: true };
+}
+
+/* ---------------- 随机抽词 ---------------- */
+/* 返回当前词库中「尚未种植」的候选词集合。
+   排除规则：① 已在田里的（含成熟待收获、枯萎待救）；② 历史已收获的（视为已掌握）。
+   使用 Fisher–Yates 洗牌，不依赖词库原始顺序或新增时间。 */
+function fmCandidates() {
+  var d = deck();
+  var all = (d && d.w) ? d.w : [];
+  var F = fmFarm();
+  var used = {};
+  F.plots.forEach(function (p) { used[String(p.en).toLowerCase()] = 1; });
+  (F.harvests || []).forEach(function (h) { used[String(h.en).toLowerCase()] = 1; });
+  var out = [];
+  all.forEach(function (w) {
+    if (!w || !w[0] || !w[1]) return;
+    var en = String(w[0]).toLowerCase();
+    if (used[en]) return;          /* 已种植 / 已收获 → 排除 */
+    out.push(w);
+  });
+  return out;
+}
+/* 真正随机抽取一个候选词；池空时返回 null */
+function fmRandomWord() {
+  var pool = fmCandidates();
+  if (!pool.length) return null;
+  shuffle(pool);                    /* Fisher–Yates，均匀随机 */
+  return pool[0];
+}
+/* 抽取并填入种植表单；池空时给出友好引导 */
+function fmDrawOne() {
+  var w = fmRandomWord();
+  var err = $('#fmErr');
+  if (!w) {
+    FM_PICK = null;
+    var d = deck();
+    if (err) err.innerHTML = '🎉 「' + esc((d && d.n) || '当前词库') + '」的词已经全部种下啦！<br>去<b>浇水复习</b>让它们长大收获，或到「闯关词库」换个更高的词库吧 🌱';
+    var btn = $('#fmDraw'); if (btn) btn.style.display = 'none';
+    return false;
+  }
+  FM_PICK = w;                      /* 记住抽中的词，种植时直接用它 */
+  var a = $('#fmEn'), b = $('#fmCn');
+  if (a) a.textContent = w[0];
+  if (b) b.textContent = w[1] || '';
+  var em = $('#fmPickEmo');
+  if (em) { var e2 = '🌱'; try { e2 = emoOf(w) || '🌱'; } catch (e) {} em.textContent = e2; }
+  if (err) err.textContent = '';
+  var btn = $('#fmDraw'); if (btn) btn.style.display = '';
+  /* 抽中后自动朗读一次，帮助记忆 */
+  try { if (Voice && Voice.speak && S.cfg.voiceOn) Voice.speak(w[0], S.cfg.rate); } catch (e) {}
+  return true;
+}
+/* 浇水结算：ok=true 正确（长经验、可复活），ok=false 错误（仅解除枯萎警告） */
+function fmWater(plot, ok) {
+  if (!plot) return;
+  var F = fmFarm();
+  var t = todayStr();
+  plot.reviews = (plot.reviews || 0) + 1;
+  plot.lastReview = t;
+  if (ok) {
+    plot.right = (plot.right || 0) + 1;
+    plot.exp = Math.min(100, (plot.exp || 0) + FM_GAIN);
+    plot.stage = fmStage(plot.exp);
+    plot.status = (plot.stage >= 4) ? 'ripe' : 'growing';
+  } else {
+    plot.wrong = (plot.wrong || 0) + 1;
+    if (plot.status === 'wilt' && plot.stage < 4) plot.status = 'growing';  /* 浇过水即复活 */
+  }
+  F.history[t] = (F.history[t] || 0) + 1;
+  F.daily.watered = (F.daily.watered || 0) + 1;
+  if (F.daily.watered === F.daily.goal) { try { addStars(2, '完成今日浇灌'); } catch (e) {} }
+  save();
+}
 
 /* ---------------- 单词配对：青铜→白银→黄金→王者 ---------------- */
 var MATCH_LV = [
@@ -556,8 +739,20 @@ function renderSwitch() {
 function fcStart(k) {
   var d = DMAP[k] || deck();
   if (!d.w.length) return;
-  FC = { k: k, list: pick(d.w, Math.min(20, d.w.length)), i: 0, know: 0, again: 0 };
+  /* 无限流：把整个词库打乱后循环取词，学完一轮自动从头再开始。
+     不设数量上限，用户点多少学多少。 */
+  var total = d.w.length;
+  FC = { k: k, list: shuffle(d.w.slice()), i: 0, know: 0, again: 0, total: total, round: 1 };
   renderFC();
+}
+/* 无限流推进：走到词库末尾就重新洗牌进入下一轮，永不结束 */
+function fcAdvance() {
+  if (!FC) return;
+  if (FC.i >= FC.list.length) {
+    FC.list = shuffle(FC.list);   /* 重新打乱，避免每轮顺序相同 */
+    FC.i = 0;
+    FC.round = (FC.round || 1) + 1;
+  }
 }
 function renderFC() {
   if (!FC || !FC.list.length) return;
@@ -570,9 +765,7 @@ function renderFC() {
   $('#fcCn').textContent = w[1];
   $('#fcEg').textContent = '点「认识了」记入抗遗忘复习';
   $('#fcFront').style.background = 'var(--c-yellow)';
-  var n = FC.list.length;
-  $('#fcIdx').textContent = (FC.i + 1) + ' / ' + n;
-  $('#fcBar').style.setProperty('--pct', Math.round(FC.i / n * 100) + '%');
+  /* 无限流：不显示进度与总数，只累计「认识了 / 还要练」 */
   $('#fcKnow').textContent = FC.know;
   $('#fcAgain').textContent = FC.again;
   preloadVoice(FC.list, FC.i);
@@ -650,6 +843,18 @@ function finListen() {
 
 /* ---------------- 打地鼠单词游戏 ---------------- */
 var WH = null, WH_TICK = null, WH_RETRACT = null;
+var TD = null, TD_RAF = null, TD_SPAWN = null, TD_CLEAR = null, TD_LAST = null, TD_MEAN_T = null;
+var FM = null;   /* 单词农场 · 会话态 */
+var FM_PICK = null;   /* 单词农场 · 当前随机抽中的词 [en, cn, ipa, emo] */
+var TD_SEL = { deck: 'primary', count: 20, diff: 'normal' };
+var TD_COUNTS = [{ n: 10, t: '10 词' }, { n: 20, t: '20 词' }, { n: 30, t: '30 词' }];
+var TD_DIFF = {
+  easy:   { n: '轻松', perWave: 3, hp: 6, speed: 0.042, spawnGap: 1100, waveGap: 2600 },
+  normal: { n: '标准', perWave: 4, hp: 5, speed: 0.058, spawnGap: 950,  waveGap: 2200 },
+  hard:   { n: '挑战', perWave: 5, hp: 4, speed: 0.074, spawnGap: 800,  waveGap: 1800 }
+};
+/* 固定进攻路径（百分比坐标 0-100）：起点左上、终点右中为基地 */
+var TD_WP = [[4,16],[24,16],[24,52],[46,52],[46,20],[68,20],[68,66],[86,66],[86,38],[96,38]];
 var WH_SEL = { theme: 'primary', diff: 'easy' }, WH_LAST = null;
 var WH_DIFFS = {
   easy:   { n: '简单', time: 90,  stay: 1400, dis: 1, gap: 6 },
@@ -807,9 +1012,10 @@ function finWhack() {
   if (!WH) return;
   var total = WH.right + WH.wrong + WH.miss;
   var acc = total ? Math.round(WH.right / total * 100) : 0;
-  var bonus = WH.score >= 200 ? 50 : (WH.score >= 100 ? 30 : (WH.score >= 40 ? 15 : 0));
-  WH.score += bonus;
-  if (WH.score) addStars(WH.score, '打地鼠 ' + WH.right + ' 只');
+  /* 胜利奖励：打地鼠完成一轮（点中过单词即算过关）固定 +3 ⭐ */
+  var win = WH.right > 0;
+  if (win) addStars(3, '打地鼠过关');
+  var bonus = win ? 3 : 0;
   var list = Object.keys(WH.rightWords).map(function (k) { return WH.rightWords[k]; })
     .sort(function (a, b) { return (a.cn || '').localeCompare(b.cn || '', 'zh'); });
   $('#whFinal').innerHTML =
@@ -818,12 +1024,601 @@ function finWhack() {
     '<div class="wh-stat"><b>' + acc + '%</b><span>正确率</span></div>' +
     '<div class="wh-stat"><b>' + WH.best + '</b><span>最高连对</span></div>' +
     '<div class="wh-stat"><b>' + WH.level + '</b><span>到达关卡</span></div>' +
-    (bonus ? '<div class="wh-stat wh-stat--bonus"><b>+' + bonus + '</b><span>通关奖励</span></div>' : '');
+    (bonus ? '<div class="wh-stat wh-stat--bonus"><b>+' + bonus + ' ⭐</b><span>过关奖励</span></div>' : '');
   $('#whWords').innerHTML = list.length
     ? list.map(function (w) { return '<span class="wh-word">' + (w.emo || '🔤') + ' <b>' + esc(w.en) + '</b>' + (w.cn ? ' ' + esc(w.cn) : '') + (w.hits > 1 ? ' <i>×' + w.hits + '</i>' : '') + '</span>'; }).join('')
     : '<span class="wh-word wh-word--none">这一局还没点中单词，下局加油！🐹</span>';
   openOv('#ovWhackResult');
   WH = null;
+}
+
+/* ==================== 单词塔防 ==================== */
+function pathD() {
+  var d = 'M ' + TD_WP[0][0] + ' ' + TD_WP[0][1];
+  for (var i = 1; i < TD_WP.length; i++) d += ' L ' + TD_WP[i][0] + ' ' + TD_WP[i][1];
+  return d;
+}
+function atPos(p) {
+  var segs = TD_WP.length - 1, t = clamp(p, 0, 1) * segs, s = Math.floor(t);
+  if (s >= segs) return TD_WP[segs].slice();
+  var f = t - s, a = TD_WP[s], b = TD_WP[s + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+}
+/* ================================================================
+   单词农场 · 主界面与交互
+   ================================================================ */
+function startFarm() { renderFarm(); openOv('#ovFarm'); }
+
+function renderFarm() {
+  var F = fmFarm();
+  var ripe = F.plots.filter(function (p) { return p.stage >= 4; }).length;
+  var wilt = F.plots.filter(function (p) { return p.status === 'wilt'; }).length;
+  var st = $('#fmStreak'); if (st) st.textContent = '🔥 ' + fmStreak() + ' 天';
+
+  var sum = $('#fmSum');
+  if (sum) sum.innerHTML =
+    '<div class="fm-sum__i"><b>' + F.plots.length + '</b><span>🌱 已种植</span></div>' +
+    '<div class="fm-sum__i"><b>' + (ripe + F.harvests.length) + '</b><span>✅ 已掌握</span></div>' +
+    '<div class="fm-sum__i"><b class="' + (wilt ? 'fm-warn' : '') + '">' + wilt + '</b><span>⚠️ 需浇水</span></div>';
+
+  var d = $('#fmDaily');
+  if (d) {
+    var pct = Math.min(100, Math.round((F.daily.watered || 0) / (F.daily.goal || 5) * 100));
+    d.innerHTML = '<div class="fm-daily__t">🎯 今日任务：浇水 <b>' + (F.daily.watered || 0) + '/' + (F.daily.goal || 5) + '</b> 株' +
+      (F.daily.watered >= F.daily.goal ? ' <span class="fm-done">已完成 ✅</span>' : '') + '</div>' +
+      '<div class="bar"><div class="bar__fill" style="--pct:' + pct + '%"></div></div>';
+  }
+
+  var g = $('#farmGrid'); if (!g) return;
+  if (!F.plots.length) {
+    g.innerHTML = '<div class="fm-empty">田地还空着，点「🌱 种新词」种下第一个单词吧！</div>';
+    return;
+  }
+  /* 成熟优先、枯萎其次，然后按经验降序 */
+  var list = F.plots.slice().sort(function (a, b) {
+    var r = function (p) { return p.status === 'wilt' ? 0 : (p.stage >= 4 ? 1 : 2); };
+    if (r(a) !== r(b)) return r(a) - r(b);
+    return (b.exp || 0) - (a.exp || 0);
+  });
+  g.innerHTML = list.map(function (p) {
+    var cls = 'fm-cell' + (p.status === 'wilt' ? ' is-wilt' : '') + (p.stage >= 4 ? ' is-ripe' : '');
+    var emo = p.status === 'wilt' ? '🥀' : FM_EMO[p.stage];
+    return '<div class="' + cls + '" data-act="farm-tap" data-id="' + p.id + '">' +
+      '<div class="fm-cell__emo">' + emo + '</div>' +
+      '<div class="fm-cell__en">' + esc(p.en) + '</div>' +
+      '<div class="fm-cell__st">' + (p.status === 'wilt' ? '⚠️ 枯萎' : FM_STAGE[p.stage].slice(2)) + '</div>' +
+      '<div class="fm-cell__bar"><i style="width:' + (p.exp || 0) + '%"></i></div>' +
+      '</div>';
+  }).join('');
+}
+
+function openFarmPlant() {
+  var e = $('#fmErr'); if (e) e.textContent = '';
+  openOv('#ovFarmPlant');
+  /* 自动从词库随机抽一个词填好（换一个 = 重新抽） */
+  setTimeout(function () { fmDrawOne(); }, 80);
+}
+function doPlant() {
+  var err = $('#fmErr');
+  var w = FM_PICK;                       /* 用抽词时保存的词，避免依赖 DOM 文本 */
+  var en = w ? w[0] : (($('#fmEn') || {}).textContent || '');
+  var cn = w ? (w[1] || '') : (($('#fmCn') || {}).textContent || '');
+  if (!en) { if (err) err.textContent = '还没有抽到单词，点「🎲 换一个」试试'; try { clickSfx('err'); } catch (e) {} return; }
+  var r = fmPlantWord(en, cn);
+  if (!r.ok) { if (err) err.textContent = r.msg; try { clickSfx('err'); } catch (e) {} return; }
+  try { clickSfx('ok'); } catch (e) {}
+  try { toast('种下啦 🌱 多用复习给它浇水', 'ok'); } catch (e) {}
+  FM_PICK = null;
+  closeOv(); renderFarm();
+  setTimeout(function () { openOv('#ovFarm'); }, 60);
+}
+
+/* ---- 浇水复习会话 ---- */
+function openFarmWater() {
+  var F = fmFarm();
+  var todo = F.plots.filter(function (p) { return p.stage < 4; });
+  if (!todo.length) { toast('还没有可浇水的作物，先去种几个词吧 🌱', 'warn'); return; }
+  FM = { queue: shuffle(todo.slice()).slice(0, 5), idx: -1, right: 0, wrong: 0, cur: null, q: null, answered: false, last: null };
+  openOv('#ovFarmWater');
+  farmNext();
+}
+function farmNext() {
+  if (!FM) return;
+  FM.idx++;
+  FM.answered = false;
+  var nx = $('#fmNext'); if (nx) nx.style.display = 'none';
+  var fb = $('#fmFb'); if (fb) { fb.textContent = ''; fb.className = 'fm-fb'; }
+  if (FM.idx >= FM.queue.length) { farmFinish(); return; }
+  var plot = FM.queue[FM.idx];
+  FM.cur = plot;
+  /* 三种任务轮换：拼写 / 选择 / 例句填空 */
+  var kind = ['spell', 'choice', 'cloze'][FM.idx % 3];
+  if (kind === 'spell') {
+    FM.q = { kind: 'spell', plot: plot };
+  } else {
+    var pool = distract('primary', plot.en, 3);
+    var list = [{ en: plot.en, cn: plot.cn }].concat(pool.map(function (x) { return { en: x[0], cn: x[1] }; }));
+    shuffle(list);
+    FM.q = { kind: kind, plot: plot, opts: list };
+  }
+  renderFarmQ();
+}
+function renderFarmQ() {
+  var q = FM.q; if (!q) return;
+  var t = $('#fmProg'); if (t) t.textContent = (FM.idx + 1) + '/' + FM.queue.length;
+  var pl = $('#fmPlant');
+  if (pl) {
+    var st = q.plot.status === 'wilt' ? '🥀 枯萎中 · 浇活它！' : FM_EMO[q.plot.stage] + ' ' + FM_STAGE[q.plot.stage].slice(2);
+    pl.innerHTML = '<span class="fm-plant__emo">' + (q.plot.status === 'wilt' ? '🥀' : FM_EMO[q.plot.stage]) + '</span>' +
+      '<span class="fm-plant__txt"><b>' + esc(q.plot.en) + '</b><i>' + st + ' · ' + (q.plot.exp || 0) + '%</i></span>';
+  }
+  var qq = $('#fmQ'), ops = $('#fmOpts'), sp = $('#fmSpell');
+  if (q.kind === 'spell') {
+    if (sp) sp.style.display = '';
+    if (ops) { ops.style.display = 'none'; ops.innerHTML = ''; }
+    if (qq) qq.innerHTML = '✍️ 拼出这个单词：<b class="fm-cn">' + esc(q.plot.cn) + '</b><span class="fm-tip">（中文释义）</span>';
+    var inp = $('#fmIn'); if (inp) { inp.value = ''; setTimeout(function () { try { inp.focus(); } catch (e) {} }, 220); }
+  } else {
+    if (sp) sp.style.display = 'none';
+    if (ops) ops.style.display = '';
+    if (qq) {
+      qq.innerHTML = q.kind === 'choice'
+        ? '👀 选出「<b class="fm-cn">' + esc(q.plot.cn) + '</b>」对应的英文单词'
+        : '🧩 例句填空：The ___ ' + 'is very useful.' + '<br><span class="fm-tip">中文：' + esc(q.plot.cn) + '</span>';
+    }
+    if (ops) ops.innerHTML = q.opts.map(function (o) {
+      return '<div class="fm-opt" data-act="farm-ans" data-en="' + esc(o.en) + '">' + esc(o.en) + '</div>';
+    }).join('');
+  }
+}
+function farmAnswer(el) {
+  if (!FM || FM.answered || !FM.q) return;
+  var q = FM.q, input = '';
+  if (q.kind === 'spell') {
+    input = String(($('#fmIn') || {}).value || '').trim().toLowerCase();
+    if (!input) return;
+  } else {
+    input = String((el && el.dataset && el.dataset.en) || '').toLowerCase();
+  }
+  var ok = (input === q.plot.en);
+  FM.answered = true;
+  if (ok) FM.right++; else FM.wrong++;
+  fmWater(q.plot, ok);
+  /* 学习联动：计入掌握进度 / 错题本 */
+  try { if (ok) { mLearn(S.deck, q.plot.en, 'exercise'); S.stat.spell = (S.stat.spell || 0) + 1; } else { addWrong({ k: S.deck, en: q.plot.en, cn: q.plot.cn }); } } catch (e) {}
+  var fb = $('#fmFb');
+  if (fb) {
+    fb.className = 'fm-fb ' + (ok ? 'is-ok' : 'is-err');
+    fb.innerHTML = ok
+      ? '✅ 答对啦！浇水 +1 💧 ' + (q.plot.stage >= 4 ? '<b>🎉 成熟了！</b>' : '<span class="fm-tip">成长 ' + q.plot.exp + '%</span>')
+      : '❌ 正确答案：<b>' + esc(q.plot.en) + '</b>（' + esc(q.plot.cn) + '）';
+  }
+  try { clickSfx(ok ? 'ok' : 'err'); } catch (e) {}
+  if (ok) {
+    var d = $('#fmDrop');
+    if (d) { d.classList.remove('is-go'); void d.offsetWidth; d.classList.add('is-go'); }
+    try { if (Voice && Voice.speak) Voice.speak(q.plot.en, S.cfg.rate); } catch (e) {}
+  }
+  /* 高亮选项：正确项标绿，误选的非正确项标红 */
+  if (q.kind !== 'spell') {
+    var all = $$('#fmOpts .fm-opt');
+    all.forEach(function (n) {
+      if (String(n.dataset.en).toLowerCase() === q.plot.en) n.classList.add('is-right');
+      else if (n.classList.contains('is-sel')) n.classList.add('is-wrong');
+    });
+  }
+  var nx = $('#fmNext'); if (nx) nx.style.display = '';
+}
+function farmFinish() {
+  var F = fmFarm();
+  var ripe = F.plots.filter(function (p) { return p.stage >= 4; }).length;
+  var r = FM ? FM.right : 0, w = FM ? FM.wrong : 0;
+  FM = null;
+  closeOv();
+  toast('浇水完成 💧 答对 ' + r + ' 题' + (w ? '，错 ' + w + ' 题已入复习本' : '') + '；农场已有 ' + ripe + ' 株成熟 🍎', 'ok');
+  setTimeout(function () { renderFarm(); openOv('#ovFarm'); }, 60);
+}
+
+/* ---- 统计面板 ---- */
+function openFarmStats() {
+  var F = fmFarm(), t = todayStr();
+  var ripe = F.plots.filter(function (p) { return p.stage >= 4; }).length;
+  var growing = F.plots.filter(function (p) { return p.stage < 4; }).length;
+  var wilt = F.plots.filter(function (p) { return p.status === 'wilt'; }).length;
+  var right = 0, total = 0;
+  F.plots.forEach(function (p) { right += p.right || 0; total += (p.right || 0) + (p.wrong || 0); });
+  var acc = total ? Math.round(right / total * 100) : 0;
+  var s = $('#fmStat');
+  if (s) s.innerHTML =
+    statRow('🌱 已种植', F.plots.length + ' 个') +
+    statRow('🍎 已成熟', ripe + ' 个') +
+    statRow('🏅 累计收获', F.harvests.length + ' 个') +
+    statRow('✅ 已掌握单词', (ripe + F.harvests.length) + ' 个') +
+    statRow('🔥 连续学习', fmStreak() + ' 天') +
+    statRow('🎯 今日浇灌', (F.daily.watered || 0) + '/' + (F.daily.goal || 5) + ' 株') +
+    statRow('📖 复习正确率', acc + '%') +
+    statRow('⚠️ 枯萎待救', wilt + ' 株');
+
+  /* 学习曲线：最近 14 天 */
+  var c = $('#fmChart');
+  if (c) {
+    var days = [], max = 1, d = new Date();
+    for (var i = 13; i >= 0; i--) {
+      var dd = new Date(d.getTime() - i * 864e5);
+      var k = dd.getFullYear() + '-' + String(dd.getMonth() + 1).padStart(2, '0') + '-' + String(dd.getDate()).padStart(2, '0');
+      var v = F.history[k] || 0;
+      if (v > max) max = v;
+      days.push({ k: k, v: v, lb: String(dd.getMonth() + 1) + '/' + dd.getDate() });
+    }
+    c.innerHTML = days.map(function (x) {
+      var h = Math.round(x.v / max * 100);
+      return '<div class="fm-bar"><i style="height:' + Math.max(4, h) + '%"></i><em>' + x.v + '</em><span>' + x.lb + '</span></div>';
+    }).join('');
+  }
+
+  var h = $('#fmHarvests');
+  if (h) {
+    if (!F.harvests.length) h.innerHTML = '<div class="fm-empty">还没有收获，浇到 100% 的作物就能收获啦 🍎</div>';
+    else h.innerHTML = F.harvests.slice(-20).reverse().map(function (x) {
+      return '<span class="wh-word">🍎 ' + esc(x.en) + ' <i>' + esc(x.cn || '') + '</i></span>';
+    }).join('');
+  }
+  openOv('#ovFarmStats');
+}
+function statRow(k, v) { return '<div class="fm-stat__r"><span>' + k + '</span><b>' + v + '</b></div>'; }
+
+/* ---- 管理：增删改 + 批量导入 ---- */
+function openFarmManage() { renderFarmList(); openOv('#ovFarmManage'); }
+function renderFarmList() {
+  var F = fmFarm(), box = $('#fmList');
+  if (!box) return;
+  if (!F.plots.length) { box.innerHTML = '<div class="fm-empty">还没有作物</div>'; return; }
+  box.innerHTML = F.plots.map(function (p) {
+    var emo = p.status === 'wilt' ? '🥀' : FM_EMO[p.stage];
+    return '<div class="fm-row">' +
+      '<span class="fm-row__emo">' + emo + '</span>' +
+      '<span class="fm-row__en">' + esc(p.en) + '</span>' +
+      '<span class="fm-row__cn">' + esc(p.cn || '') + '</span>' +
+      '<button class="fm-row__b" data-act="farm-edit" data-id="' + p.id + '">✏️</button>' +
+      '<button class="fm-row__b" data-act="farm-del" data-id="' + p.id + '">🗑</button>' +
+      '</div>';
+  }).join('');
+}
+function farmImport() {
+  var ta = $('#fmImport'); var txt = (ta && ta.value) || '';
+  if (!txt.trim()) { toast('请输入要导入的单词', 'warn'); return; }
+  var lines = txt.split(/\r?\n/), okN = 0, badN = 0;
+  lines.forEach(function (line) {
+    line = line.trim(); if (!line) return;
+    var parts = line.split(/[,，\t]/);
+    if (parts.length < 2) { badN++; return; }
+    var r = fmPlantWord(parts[0], parts.slice(1).join(' '));
+    if (r.ok) okN++; else badN++;
+  });
+  if (ta) ta.value = '';
+  renderFarmList();
+  toast('导入完成：成功 ' + okN + ' 个' + (badN ? '，跳过 ' + badN + ' 行' : ''), okN ? 'ok' : 'warn');
+  try { clickSfx(okN ? 'ok' : 'err'); } catch (e) {}
+}
+function farmDelete(id) {
+  var F = fmFarm();
+  F.plots = F.plots.filter(function (p) { return p.id !== id; });
+  save(); renderFarmList();
+  try { clickSfx('back'); } catch (e) {}
+}
+function farmEdit(id) {
+  var p = fmPlot(id); if (!p) return;
+  var cn = prompt('修改「' + p.en + '」的中文释义：', p.cn || '');
+  if (cn === null) return;
+  cn = String(cn).trim();
+  if (!cn) return;
+  p.cn = cn; save(); renderFarmList();
+  try { clickSfx('ok'); } catch (e) {}
+}
+function harvestWord(id) {
+  var p = fmPlot(id); if (!p || p.stage < 4) return;
+  var F = fmFarm();
+  F.harvests.push({ en: p.en, cn: p.cn, date: todayStr() });
+  F.daily.harvested = (F.daily.harvested || 0) + 1;
+  F.plots = F.plots.filter(function (x) { return x.id !== id; });
+  save();
+  try { addStars(3, '农场收获'); } catch (e) {}   /* 成熟 1 个种子 → +3 ⭐ */
+  try { toast('收获 ' + p.en + ' 🍎 太棒了！', 'ok'); } catch (e) {}
+  try { clickSfx('ok'); } catch (e) {}
+  renderFarm();
+}
+function farmTap(id) {
+  var p = fmPlot(id); if (!p) return;
+  if (p.stage >= 4) { harvestWord(id); return; }
+  FM = { queue: [p], idx: -1, right: 0, wrong: 0, cur: null, q: null, answered: false };
+  closeOv();
+  setTimeout(function () { openOv('#ovFarmWater'); farmNext(); }, 60);
+}
+
+function startTdef() {
+  if (!TD_SEL.deck || !DMAP[TD_SEL.deck] || !unlocked(DMAP[TD_SEL.deck])) TD_SEL.deck = 'primary';
+  renderTdefDecks();
+  openOv('#ovTdefStart');
+}
+function renderTdefDecks() {
+  var t = $('#tdDecks'); t.innerHTML = '';
+  DECKS.forEach(function (d) {
+    var ok = unlocked(d), sel = (d.k === TD_SEL.deck) ? ' is-sel' : '', lk = ok ? '' : ' is-lock';
+    t.innerHTML += '<div class="wh-chip' + sel + lk + '" data-act="tdef-deck" data-deck="' + d.k + '">' +
+      d.e + ' <b>' + esc(d.n) + '</b>' + (ok ? '' : '<i>🔒' + d.need + '⭐</i>') + '</div>';
+  });
+  var c = $('#tdCounts'); c.innerHTML = '';
+  TD_COUNTS.forEach(function (o) {
+    var sel = (o.n === TD_SEL.count) ? ' is-sel' : '';
+    c.innerHTML += '<div class="wh-chip' + sel + '" data-act="tdef-count" data-count="' + o.n + '"><b>' + o.t + '</b></div>';
+  });
+  var f = $('#tdDiffs'); f.innerHTML = '';
+  Object.keys(TD_DIFF).forEach(function (k) {
+    var D = TD_DIFF[k], sel = (k === TD_SEL.diff) ? ' is-sel' : '';
+    f.innerHTML += '<div class="wh-chip' + sel + '" data-act="tdef-diff" data-diff="' + k + '"><b>' + D.n + '</b></div>';
+  });
+  /* ④ 游戏发音设置：开关 + 音量（随 S.cfg 同步，记忆上次选择） */
+  var sw = $('.sw[data-sw="voiceOn"]'); if (sw) sw.classList.toggle('is-on', !!S.cfg.voiceOn);
+  var vol = $('#tdVol');
+  if (vol) {
+    if (typeof S.cfg.voiceVol !== 'number') S.cfg.voiceVol = 0.8;
+    vol.value = Math.round(S.cfg.voiceVol * 100);
+    var vv = $('#tdVolVal'); if (vv) vv.textContent = vol.value + '%';
+    /* 拖动实时调整并保存；点击/拖动都走 input 事件 */
+    vol.oninput = function () {
+      S.cfg.voiceVol = (+vol.value) / 100;
+      if (vv) vv.textContent = vol.value + '%';
+      save();
+    };
+  }
+}
+function tdefGo() {
+  if (TD_RAF) cancelAnimationFrame(TD_RAF);
+  if (TD_SPAWN) clearTimeout(TD_SPAWN);
+  if (TD_CLEAR) clearInterval(TD_CLEAR);
+  tdefBegin(TD_SEL.deck, TD_SEL.count, TD_SEL.diff);
+}
+function buildQueue(deckKey, count, perWave) {
+  var d = DMAP[deckKey]; if (!d.w.length) return [];
+  var words = d.w.slice().sort(function (a, b) { return a[0].length - b[0].length; }); /* 短词在前，长词靠后波次 */
+  var waves = Math.ceil(count / perWave), queue = [], L = words.length;
+  for (var wI = 0; wI < waves; wI++) {
+    var a = Math.floor(L * wI / waves), b = Math.floor(L * (wI + 1) / waves);
+    var pool = words.slice(a, Math.max(b, a + 1));
+    shuffle(pool);
+    for (var i = 0; i < perWave; i++) queue.push(pool[i % pool.length]);
+  }
+  queue = queue.slice(0, count);
+  while (queue.length < count) queue.push(d.w[rnd(d.w.length)]);
+  return queue;
+}
+function tdefBegin(deckKey, count, diffKey) {
+  var d = DMAP[deckKey] || deck();
+  if (!d.w.length) { toast('该词库还没有单词', 'warn'); return; }
+  var diff = TD_DIFF[diffKey] || TD_DIFF.normal;
+  TD_LAST = { deckKey: deckKey, count: count, diffKey: diffKey };
+  TD = {
+    deckKey: deckKey, diff: diff, score: 0, combo: 0, best: 0, right: 0, wrong: 0,
+    maxHp: diff.hp, hp: diff.hp, wave: 0, totalWaves: Math.ceil(count / diff.perWave),
+    enemies: [], queue: buildQueue(deckKey, count, diff.perWave), spawned: 0,
+    toSpawn: 0, betweenWaves: false, paused: false, last: 0,
+    rightWords: {}, wrongWords: {}, baseSpeed: diff.speed
+  };
+  openOv('#ovTdef');
+  var path = $('#tdPath'); if (path) path.setAttribute('d', pathD());
+  var field = $('#tdField');
+  field.querySelectorAll('.td-enemy,.td-boom,.td-bullet').forEach(function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+  $('#tdScore').textContent = '0 分';
+  $('#tdCombo').textContent = '';
+  $('#tdHp').style.width = '100%';
+  var inp = $('#tdInput');
+  inp.value = '';
+  inp.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); fireTD(); } };
+  updateWaveUI();
+  if (TD_RAF) cancelAnimationFrame(TD_RAF);
+  TD.last = 0;
+  TD_RAF = requestAnimationFrame(tickTD);
+  startWave();
+}
+function startWave() {
+  if (!TD) return;
+  TD.wave++;
+  TD.toSpawn = TD.diff.perWave;
+  updateWaveUI();
+  spawnTick();
+}
+function spawnTick() {
+  if (!TD || TD.paused || TD.betweenWaves) return;
+  if (TD.toSpawn > 0 && TD.spawned < TD.queue.length) {
+    makeEnemy(TD.queue[TD.spawned]); TD.spawned++; TD.toSpawn--;
+    updateWaveUI();
+    if (TD.toSpawn > 0) TD_SPAWN = setTimeout(spawnTick, TD.diff.spawnGap);
+    else scheduleWaveEnd();
+  }
+}
+function makeEnemy(word) {
+  var lvl = Math.floor((TD.wave - 1) / 1) + 1;
+  var sp = TD.baseSpeed * Math.pow(1.1, lvl - 1) * (0.9 + Math.random() * 0.2);
+  sp = Math.min(sp, TD.baseSpeed * 2.2);
+  var el = document.createElement('div');
+  el.className = 'td-enemy';
+  el.innerHTML = '<span class="td-enemy__emo">' + (emoOf(word) || '👾') + '</span><span class="td-enemy__txt">' + esc(word[0]) + '</span>';
+  var c = atPos(0);
+  el.style.left = c[0] + '%'; el.style.top = c[1] + '%';
+  $('#tdField').appendChild(el);
+  TD.enemies.push({ word: word, pos: 0, speed: sp, baseSpeed: sp, boost: 0, el: el, alive: true });
+}
+function scheduleWaveEnd() {
+  if (TD_CLEAR) clearInterval(TD_CLEAR);
+  TD_CLEAR = setInterval(function () {
+    if (!TD) { clearInterval(TD_CLEAR); TD_CLEAR = null; return; }
+    if (TD.enemies.length === 0) {
+      clearInterval(TD_CLEAR); TD_CLEAR = null;
+      if (TD.spawned >= TD.queue.length && TD.wave >= TD.totalWaves) { finTdef(true); }
+      else if (TD.wave < TD.totalWaves) {
+        TD.betweenWaves = true;
+        setTimeout(function () { if (TD) { TD.betweenWaves = false; startWave(); } }, TD.diff.waveGap);
+      }
+    }
+  }, 400);
+}
+function mostDangerous() {
+  var best = null;
+  TD.enemies.forEach(function (e) { if (!best || e.pos > best.pos) best = e; });
+  return best;
+}
+function updateTarget() {
+  var t = mostDangerous();
+  TD.enemies.forEach(function (e) { if (e.el) e.el.classList.toggle('is-target', e === t); });
+  var el = $('#tdTarget'); if (el) el.textContent = t ? t.word[0] : '--';
+}
+function updateWaveUI() {
+  var el = $('#tdWave'); if (el) el.textContent = '第 ' + Math.max(1, TD.wave) + '/' + TD.totalWaves + ' 波';
+  var n = $('#tdWaveN'); if (n) n.textContent = '剩 ' + Math.max(0, (TD.queue.length - TD.spawned) + TD.enemies.length) + ' 敌';
+}
+function updateHp() {
+  var f = $('#tdHp'); if (f) f.style.width = clamp(TD.hp / TD.maxHp, 0, 1) * 100 + '%';
+}
+
+/* 拼对消灭敌人后，按游戏发音设置朗读该词（音量可调；关闭则不发音）。
+   直接走 Voice 引擎，音量来自 S.cfg.voiceVol，不依赖全局「单词发音」开关。 */
+function tdefSpeak(en) {
+  if (!S.cfg.voiceOn || !window.Voice) return;
+  var vol = (typeof S.cfg.voiceVol === 'number') ? clamp(S.cfg.voiceVol, 0, 1) : 0.8;
+  try { Voice.speak(String(en), S.cfg.rate, vol); } catch (e) {}
+}
+
+/* 拼对后，在战斗区上方展示该词的中文释义卡片（多义词仅取 1~2 条，自动淡出，不遮挡路径）。 */
+function showTdefMean(en) {
+  var box = $('#tdMean'); if (!box) return;
+  var w = null;
+  for (var k in DMAP) { var f = findWord(k, en); if (f) { w = f; break; } }
+  var emo = emoOf(w) || '🔤';
+  var ms = meaningOf(en).slice(0, 2);
+  var cn = ms.length ? ms.map(function (m, i) { return (i ? '<i>·</i>' : '') + esc(m); }).join(' ') : '（暂无释义）';
+  box.innerHTML = '<span class="td-mean__en">' + emo + ' ' + esc(en) + '</span><span class="td-mean__cn">' + cn + '</span>';
+  box.classList.add('is-show');
+  if (TD_MEAN_T) clearTimeout(TD_MEAN_T);
+  TD_MEAN_T = setTimeout(function () { box.classList.remove('is-show'); }, 2400);
+}
+function tickTD(ts) {
+  if (!TD) return;
+  TD_RAF = requestAnimationFrame(tickTD);
+  if (TD.paused) { TD.last = ts; return; }
+  var dt = TD.last ? (ts - TD.last) / 1000 : 0; TD.last = ts;
+  if (dt > 0.1) dt = 0.1;   /* 后台切回防跳变 */
+  for (var i = TD.enemies.length - 1; i >= 0; i--) {
+    var e = TD.enemies[i];
+    e.pos += e.speed * dt;
+    if (e.boost && Date.now() > e.boost) { e.boost = 0; e.speed = e.baseSpeed; if (e.el) e.el.classList.remove('is-boost'); }
+    if (e.pos >= 1) {
+      e.alive = false; TD.enemies.splice(i, 1);
+      if (e.el && e.el.parentNode) e.el.parentNode.removeChild(e.el);
+      TD.hp--; updateHp(); sfx('no'); shakeField();
+      if (TD.hp <= 0) { finTdef(false); return; }
+    } else {
+      var c = atPos(e.pos); e.el.style.left = c[0] + '%'; e.el.style.top = c[1] + '%';
+    }
+  }
+  updateTarget();
+}
+function shakeField() {
+  var f = $('#tdField'); if (!f) return;
+  f.classList.remove('is-shake'); void f.offsetWidth; f.classList.add('is-shake');
+}
+function fireTD() {
+  if (!TD || TD.paused) return;
+  var inp = $('#tdInput'); var val = (inp.value || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  inp.value = '';
+  if (!val) return;
+  var target = null;
+  TD.enemies.slice().sort(function (a, b) { return b.pos - a.pos; }).forEach(function (e) {
+    if (!target && e.word[0].toLowerCase() === val) target = e;
+  });
+  if (target) killEnemy(target, true);
+  else {
+    var tgt = mostDangerous();
+    if (tgt) { tgt.speed = tgt.baseSpeed * 1.7; tgt.boost = Date.now() + 2600; if (tgt.el) tgt.el.classList.add('is-boost'); }
+    TD.combo = 0; $('#tdCombo').textContent = '';
+    sfx('no');
+    if (tgt) {
+      var w = tgt.word, key = w[0];
+      if (!TD.wrongWords[key]) TD.wrongWords[key] = { en: w[0], cn: w[1], emo: emoOf(w) || '🔤', hits: 0 };
+      TD.wrongWords[key].hits++;
+      addWrong({ type: 'tdef', q: '单词塔防拼错', a: val, en: w[0], cn: w[1], ipa: w[2], opts: null, tip: '正确拼写：' + w[0] });
+    }
+    toast('拼错啦！敌人加速冲撞 💥', 'warn');
+  }
+}
+function killEnemy(e, correct) {
+  if (!e || !e.alive) return;
+  e.alive = false;
+  var i = TD.enemies.indexOf(e); if (i >= 0) TD.enemies.splice(i, 1);
+  var field = $('#tdField');
+  if (e.el) {
+    var c = atPos(e.pos);
+    boomFx(field, c[0], c[1]);
+    if (e.el.parentNode) e.el.parentNode.removeChild(e.el);
+  }
+  if (correct) {
+    TD.right++; TD.combo++; if (TD.combo > TD.best) TD.best = TD.combo;
+    var gain = 10 + (TD.combo >= 3 ? 5 : 0); TD.score += gain;
+    sfx('ok'); cheerRight(TD.combo >= 3);
+    $('#tdScore').textContent = TD.score + ' 分';
+    $('#tdCombo').textContent = TD.combo >= 2 ? ('连对 ' + TD.combo + ' 🔥') : '';
+    var w = e.word, key = w[0];
+    if (!TD.rightWords[key]) TD.rightWords[key] = { en: w[0], cn: w[1], emo: emoOf(w) || '🔤', hits: 0 };
+    TD.rightWords[key].hits++;
+    mLearn(TD.deckKey, w[0], 'exercise');   /* 学习联动：正确拼写计入学习进度 */
+    S.stat.spell = (S.stat.spell || 0) + 1;
+    tdefSpeak(w[0]);      /* 拼对后自动朗读（游戏发音设置可关 / 调音量） */
+    showTdefMean(w[0]);   /* 拼对后展示中文释义卡片，自动淡出 */
+  }
+  updateTarget(); updateWaveUI();
+}
+function boomFx(field, x, y) {
+  if (!field) return;
+  var b = document.createElement('div');
+  b.className = 'td-boom'; b.textContent = '💥';
+  b.style.left = x + '%'; b.style.top = y + '%';
+  field.appendChild(b);
+  setTimeout(function () { if (b.parentNode) b.parentNode.removeChild(b); }, 420);
+}
+function finTdef(win) {
+  if (TD_RAF) { cancelAnimationFrame(TD_RAF); TD_RAF = null; }
+  if (TD_SPAWN) { clearTimeout(TD_SPAWN); TD_SPAWN = null; }
+  if (TD_CLEAR) { clearInterval(TD_CLEAR); TD_CLEAR = null; }
+  if (!TD) return;
+  var total = TD.right + TD.wrong;
+  var acc = total ? Math.round(TD.right / total * 100) : 0;
+  /* 胜利奖励：守住基地固定 +3 ⭐（失守不给） */
+  if (win) addStars(3, '塔防守住基地');
+  var bonus = win ? 3 : 0;
+  var list = Object.keys(TD.rightWords).map(function (k) { return TD.rightWords[k]; })
+    .sort(function (a, b) { return (a.cn || '').localeCompare(b.cn || '', 'zh'); });
+  var wl = Object.keys(TD.wrongWords).map(function (k) { return TD.wrongWords[k]; });
+  $('#tdFinal').innerHTML =
+    '<div class="wh-stat"><b>' + (win ? '🛡️ 守住' : '💥 失守') + '</b><span>' + (win ? '基地安全' : '基地被攻破') + '</span></div>' +
+    '<div class="wh-stat"><b>' + TD.score + '</b><span>总得分</span></div>' +
+    '<div class="wh-stat"><b>' + TD.right + '</b><span>消灭</span></div>' +
+    '<div class="wh-stat"><b>' + acc + '%</b><span>正确率</span></div>' +
+    '<div class="wh-stat"><b>' + TD.best + '</b><span>最高连对</span></div>' +
+    '<div class="wh-stat"><b>' + TD.wave + '/' + TD.totalWaves + '</b><span>到达波次</span></div>' +
+    (bonus ? '<div class="wh-stat wh-stat--bonus"><b>+' + bonus + ' ⭐</b><span>守塔奖励</span></div>' : '');
+  $('#tdWords').innerHTML = list.length
+    ? list.map(function (w) { return '<span class="wh-word">' + (w.emo || '🔤') + ' <b>' + esc(w.en) + '</b>' + (w.cn ? ' ' + esc(w.cn) : '') + (w.hits > 1 ? ' <i>×' + w.hits + '</i>' : '') + '</span>'; }).join('')
+    : '<span class="wh-word wh-word--none">这一局还没消灭单词，下局加油！🛡️</span>';
+  $('#tdWrongWords').innerHTML = wl.length
+    ? wl.map(function (w) { return '<span class="wh-word wh-word--wrong">' + (w.emo || '🔤') + ' <b>' + esc(w.en) + '</b>' + (w.cn ? ' ' + esc(w.cn) : '') + '</span>'; }).join('')
+    : '<span class="wh-word wh-word--none">没有拼错的单词，太棒了！🌟</span>';
+  openOv('#ovTdefResult');
+  TD = null;
+}
+function tdefQuit() {
+  if (TD_RAF) { cancelAnimationFrame(TD_RAF); TD_RAF = null; }
+  if (TD_SPAWN) { clearTimeout(TD_SPAWN); TD_SPAWN = null; }
+  if (TD_CLEAR) { clearInterval(TD_CLEAR); TD_CLEAR = null; }
+  TD = null; closeOv();
 }
 
 /* ---------------- 口语跟读打分 ---------------- */
@@ -1257,6 +2052,8 @@ function bankFor(type) {
 }
 function startEx(type) {
   if (type === 'whack') { startWhack(); return; }
+  if (type === 'tdef') { startTdef(); return; }
+  if (type === 'farm') { startFarm(); return; }
   var n = Math.min(20, Math.max(8, S.goal));
   Q = { type: type, i: 0, right: 0, combo: 0, earned: 0, lock: false, list: [], total: 0 };
   if (type === 'spell' || type === 'vocab') {
@@ -2313,6 +3110,46 @@ var ACT = {
     if (WH_RETRACT) { clearTimeout(WH_RETRACT); WH_RETRACT = null; }
     WH = null; closeOv();
   },
+  /* 单词塔防 */
+  'tdef-quit': function () { clickSfx('back'); tdefQuit(); },
+  'tdef-go': function () { clickSfx('tap'); tdefGo(); },
+  'tdef-again': function () { clickSfx('tap'); if (TD_LAST) tdefBegin(TD_LAST.deckKey, TD_LAST.count, TD_LAST.diffKey); },
+  'tdef-pick': function () { clickSfx('tap'); startTdef(); },
+  'tdef-deck': function (el) { TD_SEL.deck = el.dataset.deck; renderTdefDecks(); },
+  'tdef-count': function (el) { TD_SEL.count = +el.dataset.count; renderTdefDecks(); },
+  'tdef-diff': function (el) { TD_SEL.diff = el.dataset.diff; renderTdefDecks(); },
+
+  /* ---- 单词农场 ---- */
+  'farm-quit': function () { clickSfx('back'); FM = null; closeOv(); },
+  'farm-close': function () { clickSfx('back'); FM = null; closeOv(); setTimeout(function () { renderFarm(); openOv('#ovFarm'); }, 60); },
+  'farm-plant': function () { clickSfx('tap'); openFarmPlant(); },
+  'farm-draw': function () { clickSfx('tap'); fmDrawOne(); },
+  'farm-doplant': function () { doPlant(); },
+  'farm-water': function () { clickSfx('tap'); openFarmWater(); },
+  'farm-next': function () { clickSfx('tap'); farmNext(); },
+  'farm-ans': function (el) {
+    /* 点击选项时先标记选中态，便于反馈高亮 */
+    if (el && el.dataset && el.dataset.en !== undefined) {
+      el.classList.add('is-sel');
+    }
+    farmAnswer(el);
+  },
+  'farm-tap': function (el) { clickSfx('tap'); farmTap(el.dataset.id); },
+  'farm-harvest': function (el) { harvestWord(el.dataset.id); },
+  'farm-stats': function () { clickSfx('tap'); openFarmStats(); },
+  'farm-manage': function () { clickSfx('tap'); openFarmManage(); },
+  'farm-import': function () { farmImport(); },
+  'farm-del': function (el) { farmDelete(el.dataset.id); },
+  'farm-edit': function (el) { farmEdit(el.dataset.id); },
+  'tdef-fire': function () { clickSfx('pop'); fireTD(); },
+  'tdef-pause': function () { if (TD) { TD.paused = true; openOv('#ovTdefPause'); } },
+  'tdef-resume': function () { if (TD) { TD.paused = false; TD.last = 0; closeOv(); } },
+  /* 游戏发音开关：拼对消灭敌人后是否朗读（独立于全局「单词发音」） */
+  'tdef-voice': function (el) {
+    S.cfg.voiceOn = S.cfg.voiceOn ? 0 : 1; save();
+    if (el) el.classList.toggle('is-on', !!S.cfg.voiceOn);
+    toast(S.cfg.voiceOn ? '已开启消灭发音 🔊' : '已关闭消灭发音');
+  },
   'whack-go': function () { clickSfx('pop'); whackGo(); },
   'whack-again': function () { clickSfx('tap'); if (WH_LAST) whackBegin(WH_LAST.themeKey, WH_LAST.diffKey); },
   'whack-pick': function () { clickSfx('tap'); startWhack(); },
@@ -2415,16 +3252,16 @@ var ACT = {
     bumpToday(1);
     save();
     FC.i++;
-    if (FC.i >= FC.list.length) { toast('本轮完成，再来一轮！', 'ok'); FC.i = 0; }
+    fcAdvance();
     renderFC();
   },
   'fc-again': function () {
     if (!FC) return;
     FC.again++; FC.i++;
-    if (FC.i >= FC.list.length) { toast('本轮完成，再来一轮！', 'ok'); FC.i = 0; }
+    fcAdvance();
     renderFC();
   },
-  'fc-reset': function () { fcStart(S.deck); toast('本轮重新开始'); },
+  'fc-reset': function () { fcStart(S.deck); toast('已重新洗牌，从第一张开始'); },
   'speak-now': function () { if (CUR) speak(CUR[0]); },
 
   practice: function (el) { rollDay(); startEx(el.dataset.type); },

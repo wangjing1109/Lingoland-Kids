@@ -115,13 +115,14 @@
   function audioUrl(word) {
     return 'https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(word) + '&type=2';
   }
-  function playAudio(word, rate) {
+  function playAudio(word, rate, vol) {
     return new Promise(function (res, rej) {
       try {
         var a = new Audio();
         a.src = audioUrl(word);
         a.preload = 'auto';
         a.playbackRate = (rate && rate >= 0.5 && rate <= 2) ? rate : 1;
+        a.volume = (typeof vol === 'number' && vol >= 0 && vol <= 1) ? vol : 1;
         curEl = a;
         var done = false;
         a.onended = function () { if (!done) { done = true; res(true); } };
@@ -135,7 +136,7 @@
   }
 
   /* ---------------- 通道 4：系统 TTS ---------------- */
-  function playSS(text, rate) {
+  function playSS(text, rate, vol) {
     return new Promise(function (res, rej) {
       if (!('speechSynthesis' in w)) return rej(new Error('no ss'));
       try {
@@ -144,7 +145,8 @@
         if (!vs.length) return rej(new Error('no voices'));
         w.speechSynthesis.cancel();
         var u = new w.SpeechSynthesisUtterance(String(text));
-        u.lang = 'en-US'; u.rate = rate; u.pitch = 1.1; u.volume = 1;
+        u.lang = 'en-US'; u.rate = rate; u.pitch = 1.1;
+        u.volume = (typeof vol === 'number' && vol >= 0 && vol <= 1) ? vol : 1;
         for (var i = 0; i < vs.length; i++) {
           if (/^en/i.test(vs[i].lang)) { u.voice = vs[i]; break; }
         }
@@ -158,26 +160,28 @@
     });
   }
 
-  /* ---------------- 主入口（在线优先真人发音，失败回退系统 TTS） ---------------- */
-  function speak(text, rate) {
+  /* ---------------- 主入口（在线优先真人发音，失败回退系统 TTS） ----------------
+     vol：0~1 音量（不传则默认 1，不影响闪卡等其它发音调用方） */
+  function speak(text, rate, vol) {
     var word = String(text || '').trim();
     if (!word) return Promise.resolve(false);
     rate = rate || 1;
     if (rate < 0.5) rate = 0.5;
     if (rate > 2) rate = 2;
+    if (typeof vol !== 'number') vol = 1;
 
     var mySeq = ++seq;
     stop();
 
     /* 在线优先真人发音；失败（离线 / 弱网 / 微信拦截）回退系统 TTS；再失败才报异常 */
-    return playAudio(word, rate)
+    return playAudio(word, rate, vol)
       .then(function (r) {
         if (mySeq === seq && r === true) { emit('ok', { text: word, channel: channel }); return true; }
         return false;
       })
       ['catch'](function () {
         stop();   /* 停掉可能仍在播放的真人音频，避免与系统 TTS 叠加出双声 */
-        return playSS(word, rate).then(function (r) {
+        return playSS(word, rate, vol).then(function (r) {
           if (mySeq === seq && r === true) { emit('ok', { text: word, channel: channel }); return true; }
           return false;
         });
@@ -282,19 +286,19 @@
   }
 
   w.Voice = {
-    speak: function (t, r) {
+    speak: function (t, r, v) {
       if (!unlocked) {
         /* 未解锁：记住待播，等待首次手势 */
-        w.Voice.__pending = { t: t, r: r };
+        w.Voice.__pending = { t: t, r: r, v: v };
         return Promise.resolve(false);
       }
-      return speak(t, r);
+      return speak(t, r, v);
     },
     flush: function () {
       if (!w.Voice.__pending) return;
       var p = w.Voice.__pending;
       w.Voice.__pending = null;
-      if (unlocked) speak(p.t, p.r);
+      if (unlocked) speak(p.t, p.r, p.v);
     },
     unlock: function () {
       var first = !unlocked;
