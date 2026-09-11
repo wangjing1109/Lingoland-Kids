@@ -66,6 +66,10 @@ var DEF = {
   td: 0, tds: 0, tdDate: '', goalHit: false,
   checkin: { dates: [], patched: [], last: '' }, wish: null,
   pos: {}, learned: {}, master: {}, wrong: [], badges: {}, hist: {},
+  /* 三个小游戏的累计战绩（徽章与奖励进度用）：每完成一轮/一次收获就累加 */
+  gstat: { whack: 0, whackWin: 0, tdef: 0, tdefWin: 0, tdefPerf: 0, farm: 0, farmDay: 0, farmHarvestDay: 0 },
+  /* 小游戏最近一局战绩（打地鼠 / 单词塔防） */
+  whackG: null, tdefG: null, farmG: null,
   cfg: { sound: 1, remind: 1, rate: 0.85, voiceOn: 1, voiceVol: 0.8 },
   stat: { learn: 0, listen: 0, speak: 0, spell: 0, vocab: 0, gram: 0, phrase: 0, match: 0, exam: 0, wrev: 0, perfect: 0, right: 0, total: 0 },
   profile: { name: 'Leo', avatar: '🦁' },
@@ -82,6 +86,8 @@ function load() {
       s.pos = o.pos || {}; s.learned = o.learned || {}; s.master = o.master || {};
       s.hist = o.hist || {};
       s.wrong = o.wrong || []; s.badges = o.badges || {};
+      /* 旧版没有小游戏战绩，补默认值 */
+      s.gstat = Object.assign(clone(DEF.gstat), o.gstat || {});
       /* 旧版没有 profile，给个默认头像和名字 */
       if (!s.profile || typeof s.profile !== 'object') s.profile = clone(DEF.profile);
       s.profile.name = (s.profile.name || DEF.profile.name).toString().slice(0, 8);
@@ -109,7 +115,11 @@ function load() {
 }
 var S = load();
 S.activated = 1; /* 功能默认全部开放（含已有存档用户） */
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+function save() {
+  /* 三个小游戏的本局/最后战绩一并落盘，徽章进度刷新后不丢 */
+  try { S.whackG = WH_G || S.whackG || null; S.tdefG = TD_G || S.tdefG || null; } catch (e) {}
+  try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+}
 
 function rollDay() {
   var k = ymd(new Date());
@@ -520,6 +530,33 @@ function speak(text, rate) {
     return true;
   } catch (e) { return false; }
 }
+/* 与 speak() 相同，但返回 Promise<boolean>，让调用方知道「到底出声没有」。
+   听力题要靠它判断是否需要把单词补显出来。 */
+function speakP(text, rate) {
+  if (!S.cfg.sound || !text) return Promise.resolve(false);
+  try {
+    if (window.Voice) {
+      var r = window.Voice.speak(String(text), rate || S.cfg.rate);
+      if (r && r.then) return r;
+      return Promise.resolve(!!r);
+    }
+  } catch (e) {}
+  if (!UON || !('speechSynthesis' in window)) return Promise.resolve(false);
+  return new Promise(function (res) {
+    try {
+      speechSynthesis.cancel();
+      var u = new SpeechSynthesisUtterance(String(text));
+      u.lang = 'en-US'; u.rate = rate || S.cfg.rate; u.pitch = 1.12; u.volume = 1;
+      if (VOICE) u.voice = VOICE;
+      var done = false;
+      var fin = function (ok) { if (!done) { done = true; res(ok); } };
+      u.onend = function () { fin(true); };
+      u.onerror = function () { fin(false); };
+      speechSynthesis.speak(u);
+      setTimeout(function () { fin(true); }, 8000);
+    } catch (e) { res(false); }
+  });
+}
 function stopSpeak() {
   try { if (window.Voice) Voice.stop(); } catch (e) {}
   try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch (e) {}
@@ -627,12 +664,44 @@ var BADGES = [
   { id: 'd3',   n: '三日坚持',   d: '连续学习 3 天',        sh: 'shield', ok: function () { return S.streak >= 3; } },
   { id: 'd7',   n: '一周不断',   d: '连续学习 7 天',        sh: 'blob',   ok: function () { return S.streak >= 7; } },
   { id: 's500', n: '星星收藏家', d: '累计 500 ⭐',          sh: 'star',   ok: function () { return S.stars >= 500; } },
-  { id: 'all',  n: '词库全通',   d: '解锁全部 5 个词库',    sh: 'hex',    ok: function () { return DECKS.every(unlocked); } }
+  { id: 'all',  n: '词库全通',   d: '解锁全部 5 个词库',    sh: 'hex',    ok: function () { return DECKS.every(unlocked); } },
+
+  /* ---------------- 小游戏徽章：打地鼠 ---------------- */
+  { id: 'wh1',   n: '地鼠新手',   d: '打地鼠过关 1 轮',      sh: 'star',   gm: 'whack',   ok: function () { return gs().whackWin >= 1; } },
+  { id: 'wh5',   n: '地鼠快手',   d: '打地鼠过关 5 轮',      sh: 'hex',    gm: 'whack',   ok: function () { return gs().whackWin >= 5; } },
+  { id: 'wh15',  n: '地鼠大师',   d: '打地鼠过关 15 轮',     sh: 'shield', gm: 'whack',   ok: function () { return gs().whackWin >= 15; } },
+  { id: 'whacc', n: '神锤手',     d: '打地鼠正确率 95% 以上', sh: 'blob',  gm: 'whack',   ok: function () { return (S.whackG || {}).win && S.whackG.acc >= 95; } },
+  { id: 'whcombo', n: '连击之锤', d: '打地鼠最高连对 10 次', sh: 'star',   gm: 'whack',   ok: function () { return (S.whackG || {}).best >= 10; } },
+
+  /* ---------------- 小游戏徽章：单词塔防 ---------------- */
+  { id: 'td1',   n: '初次守塔',   d: '塔防守住基地 1 次',    sh: 'shield', gm: 'tdef',    ok: function () { return gs().tdefWin >= 1; } },
+  { id: 'td5',   n: '守塔老兵',   d: '塔防守住基地 5 次',    sh: 'star',   gm: 'tdef',    ok: function () { return gs().tdefWin >= 5; } },
+  { id: 'td15',  n: '钢铁城墙',   d: '塔防守住基地 15 次',   sh: 'hex',    gm: 'tdef',    ok: function () { return gs().tdefWin >= 15; } },
+  { id: 'tdhp',  n: '无伤守塔',   d: '塔防满血守住基地',     sh: 'blob',   gm: 'tdef',    ok: function () { var g = S.tdefG || {}; return g.win && g.hp >= g.maxHp; } },
+  { id: 'tdacc', n: '精准炮手',   d: '塔防正确率 95% 以上',  sh: 'star',   gm: 'tdef',    ok: function () { return (S.tdefG || {}).win && S.tdefG.acc >= 95; } },
+
+  /* ---------------- 小游戏徽章：单词农场 ---------------- */
+  { id: 'fm1',   n: '小小农夫',   d: '收获 1 个成熟种子',    sh: 'star',   gm: 'farm',    ok: function () { return gs().farm >= 1; } },
+  { id: 'fm10',  n: '农场主',     d: '收获 10 个成熟种子',   sh: 'hex',    gm: 'farm',    ok: function () { return gs().farm >= 10; } },
+  { id: 'fm30',  n: '丰收达人',   d: '收获 30 个成熟种子',   sh: 'shield', gm: 'farm',    ok: function () { return gs().farm >= 30; } },
+  { id: 'fmday', n: '勤劳浇灌',   d: '1 天收获 5 个种子',    sh: 'blob',   gm: 'farm',    ok: function () { return gs().farmHarvestDay >= 5; } },
+  { id: 'fmstreak', n: '日日耕耘', d: '农场连续浇灌 7 天',   sh: 'star',   gm: 'farm',    ok: function () { try { return fmStreak() >= 7; } catch (e) { return false; } } }
 ];
-function checkBadges() {
+/* 小游戏累计战绩读取（旧存档没有 gstat 时给全 0，不会报错） */
+function gs() {
+  if (!S.gstat || typeof S.gstat !== 'object') S.gstat = clone(DEF.gstat);
+  for (var k in DEF.gstat) if (typeof S.gstat[k] !== 'number') S.gstat[k] = 0;
+  return S.gstat;
+}
+function checkBadges(silent) {
   var got = false;
   BADGES.forEach(function (b) {
-    if (!S.badges[b.id] && b.ok()) { S.badges[b.id] = 1; newBadges.push(b); got = true; }
+    if (!S.badges[b.id] && b.ok()) {
+      S.badges[b.id] = 1;
+      /* 静默补发（启动时）不弹祝贺，避免一打开就刷屏 */
+      if (!silent) newBadges.push(b);
+      got = true;
+    }
   });
   if (got) { save(); renderReward(); }
 }
@@ -843,7 +912,7 @@ function finListen() {
 
 /* ---------------- 打地鼠单词游戏 ---------------- */
 var WH = null, WH_TICK = null, WH_RETRACT = null;
-var TD = null, TD_RAF = null, TD_SPAWN = null, TD_CLEAR = null, TD_LAST = null, TD_MEAN_T = null;
+var TD = null, TD_RAF = null, TD_SPAWN = null, TD_CLEAR = null, TD_LAST = null, TD_MEAN_T = null, TD_G = null;
 var FM = null;   /* 单词农场 · 会话态 */
 var FM_PICK = null;   /* 单词农场 · 当前随机抽中的词 [en, cn, ipa, emo] */
 var TD_SEL = { deck: 'primary', count: 20, diff: 'normal' };
@@ -855,12 +924,20 @@ var TD_DIFF = {
 };
 /* 固定进攻路径（百分比坐标 0-100）：起点左上、终点右中为基地 */
 var TD_WP = [[4,16],[24,16],[24,52],[46,52],[46,20],[68,20],[68,66],[86,66],[86,38],[96,38]];
-var WH_SEL = { theme: 'primary', diff: 'easy' }, WH_LAST = null;
+var WH_SEL = { theme: 'primary', diff: 'easy' }, WH_LAST = null, WH_G = null;
 var WH_DIFFS = {
-  easy:   { n: '简单', time: 90,  stay: 1400, dis: 1, gap: 6 },
-  normal: { n: '中等', time: 120, stay: 1100, dis: 2, gap: 5 },
-  hard:   { n: '困难', time: 150, stay: 900,  dis: 3, gap: 5 }
+  easy:   { n: '简单', time: 90,  stay: 3800, dis: 1, gap: 6 },
+  normal: { n: '中等', time: 120, stay: 3000, dis: 2, gap: 5 },
+  hard:   { n: '困难', time: 150, stay: 2400, dis: 3, gap: 5 }
 };
+/* 打地鼠节奏（孩子反应时间有限，整体放慢）
+   decay      每升一关停留时长的衰减系数（越大越慢变快）
+   floor      停留时长下限，再高的关卡也来得及点
+   hold       点中后停留多久再进下一回合
+   holdWrong  点错后停留更久，让孩子看清正确答案
+   miss       漏点后停留多久再进下一回合
+   listen     听力题额外补时（要等单词读完才能判断） */
+var WH_PACE = { decay: 0.965, floor: 1600, hold: 700, holdWrong: 1000, miss: 850, listen: 1600 };
 function startWhack() {
   // 默认主题 = 当前学习进度对应的词库（若已解锁）
   if (!WH_SEL.theme || !DMAP[WH_SEL.theme] || !unlocked(DMAP[WH_SEL.theme])) WH_SEL.theme = 'primary';
@@ -924,7 +1001,12 @@ function roundWhack() {
   WH.rounds++;
   // 关卡递增：每 gap 回合升一关，地鼠停留更短、干扰更多
   WH.level = Math.floor((WH.rounds - 1) / WH.diff.gap) + 1;
-  var stay = Math.round(clamp(WH.diff.stay * Math.pow(0.92, WH.level - 1), 520, WH.diff.stay));
+  /* 先定题型，听力题要额外补时（得等单词读完才能判断） */
+  var mode = ['listen', 'cn', 'en'][rnd(3)];
+  var stay = WH.diff.stay * Math.pow(WH_PACE.decay, WH.level - 1);
+  stay = Math.max(WH_PACE.floor, stay);
+  if (mode === 'listen') stay += WH_PACE.listen;   /* 听力题补时 */
+  stay = Math.round(stay);
   var disCount = Math.min(8, WH.diff.dis + Math.floor((WH.level - 1) / 2));
   var count = Math.min(9, 1 + disCount);
   $('#whLvl').textContent = '第 ' + WH.level + ' 关';
@@ -937,9 +1019,9 @@ function roundWhack() {
     m.querySelector('.wh-mole__txt').textContent = '';
   });
   WH.lock = false;
+  WH.spoke = false;   /* 本回合是否已发出声（听力题补显判断用） */
   var ws = DMAP[WH.themeKey].w;
   var w = ws[rnd(ws.length)];
-  var mode = ['listen', 'cn', 'en'][rnd(3)];
   var dis = distract(WH.themeKey, w[0], disCount);
   var idxs = shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8]).slice(0, count);
   var targetHole = idxs[0], disI = 0;
@@ -951,7 +1033,23 @@ function roundWhack() {
     moles[h].querySelector('.wh-mole__txt').textContent = txt;
   });
   var p = $('#whPrompt');
-  if (mode === 'listen') { p.innerHTML = '🔊 听发音，点出这个单词！'; autoSpeak(w[0], 200); }
+  var round0 = WH.rounds;   /* 发音是异步的，回调时要确认还在同一回合 */
+  if (mode === 'listen') {
+    p.innerHTML = '🔊 听发音，点出这个单词！';
+    var showFallback = function () {
+      if (!WH || WH.rounds !== round0) return;
+      if (p.innerHTML.indexOf('没听清') >= 0) return;
+      p.innerHTML = '🔊 没听清？点出这个单词：<b>' + esc(w[0]) + '</b>';
+    };
+    /* 先出声；没出声就把单词补显出来，否则这题根本没法做 */
+    speakP(w[0]).then(function (ok) {
+      if (ok) { if (WH) WH.spoke = true; } else { showFallback(); }
+    })['catch'](showFallback);
+    /* 双保险：在线音频有时既不 resolve 也不 reject，超时后仍无声音就补显 */
+    setTimeout(function () {
+      if (WH && WH.rounds === round0 && !WH.spoke) showFallback();
+    }, 2600);
+  }
   else if (mode === 'cn') { p.innerHTML = '点出这个意思：<b>' + esc(w[1]) + '</b> ' + (emoOf(w) || ''); }
   else { p.innerHTML = '点出这个单词：<b>' + esc(w[0]) + '</b> <span style="color:var(--c-ink-45)">' + esc(w[2] || '') + '</span>'; }
   requestAnimationFrame(function () { idxs.forEach(function (h) { moles[h].classList.add('is-up'); }); });
@@ -983,7 +1081,7 @@ function whackHit(el) {
     var w = findWord(WH.themeKey, m.en) || [m.en, '', '', ''];
     addWrong({ type: 'whack', q: '打地鼠点错', a: m.en, en: m.en, cn: w[1], ipa: w[2], opts: null, tip: '正确单词：' + m.en });
   }
-  setTimeout(function () { if (WH && WH.timeLeft > 0) roundWhack(); }, m.isTarget ? 480 : 720);
+  setTimeout(function () { if (WH && WH.timeLeft > 0) roundWhack(); }, m.isTarget ? WH_PACE.hold : WH_PACE.holdWrong);
 }
 function popScore(el, txt) {
   var pop = document.createElement('span');
@@ -1004,7 +1102,7 @@ function retractRound() {
     var w = findWord(WH.themeKey, tgt.en) || [tgt.en, '', '', ''];
     addWrong({ type: 'whack', q: '打地鼠漏点', a: tgt.en, en: tgt.en, cn: w[1], ipa: w[2], opts: null, tip: '正确单词：' + tgt.en });
   }
-  if (WH.timeLeft > 0) setTimeout(roundWhack, 340);
+  if (WH.timeLeft > 0) setTimeout(roundWhack, WH_PACE.miss);
 }
 function finWhack() {
   if (WH_TICK) { clearInterval(WH_TICK); WH_TICK = null; }
@@ -1016,6 +1114,14 @@ function finWhack() {
   var win = WH.right > 0;
   if (win) addStars(3, '打地鼠过关');
   var bonus = win ? 3 : 0;
+  /* 打地鼠 · 本局战绩（供奖励页徽章进度使用） */
+  WH_G = {
+    win: win, right: WH.right, acc: acc, best: WH.best,
+    diffKey: WH.diffKey, themeKey: WH.themeKey, date: todayStr()
+  };
+  try { if (win) { gs().whack++; gs().whackWin++; } else { gs().whack++; } } catch (e) {}
+  try { save(); checkBadges(); } catch (e) {}
+
   var list = Object.keys(WH.rightWords).map(function (k) { return WH.rightWords[k]; })
     .sort(function (a, b) { return (a.cn || '').localeCompare(b.cn || '', 'zh'); });
   $('#whFinal').innerHTML =
@@ -1323,6 +1429,15 @@ function harvestWord(id) {
   F.plots = F.plots.filter(function (x) { return x.id !== id; });
   save();
   try { addStars(3, '农场收获'); } catch (e) {}   /* 成熟 1 个种子 → +3 ⭐ */
+  /* 农场收获计数（供奖励页徽章进度使用） */
+  try {
+    var G = gs();
+    G.farm++;
+    var tk = todayStr();
+    if (S.farmDayKey !== tk) { S.farmDayKey = tk; G.farmHarvestDay = 0; }
+    G.farmHarvestDay++;
+    save(); checkBadges();
+  } catch (e) {}
   try { toast('收获 ' + p.en + ' 🍎 太棒了！', 'ok'); } catch (e) {}
   try { clickSfx('ok'); } catch (e) {}
   renderFarm();
@@ -1594,6 +1709,14 @@ function finTdef(win) {
   /* 胜利奖励：守住基地固定 +3 ⭐（失守不给） */
   if (win) addStars(3, '塔防守住基地');
   var bonus = win ? 3 : 0;
+  /* 单词塔防 · 本局战绩（供奖励页徽章进度使用） */
+  TD_G = {
+    win: win, right: TD.right, acc: acc, best: TD.best, wave: TD.wave, totalWaves: TD.totalWaves,
+    diffKey: (TD_LAST && TD_LAST.diffKey) || 'normal', count: (TD_LAST && TD_LAST.count) || 20,
+    hp: TD.hp, maxHp: TD.maxHp, date: todayStr()
+  };
+  try { if (win) gs().tdefWin++; gs().tdef++; } catch (e) {}
+  try { save(); checkBadges(); } catch (e) {}
   var list = Object.keys(TD.rightWords).map(function (k) { return TD.rightWords[k]; })
     .sort(function (a, b) { return (a.cn || '').localeCompare(b.cn || '', 'zh'); });
   var wl = Object.keys(TD.wrongWords).map(function (k) { return TD.wrongWords[k]; });
@@ -2617,7 +2740,13 @@ var RULES = [
   ['🧠', '抗遗忘复习 1 个单词', '+1 ⭐'],
   ['🎯', '单词配对完成 1 局', '每对 +2 ⭐'],
   ['🎉', '完成今日目标', '+50 ⭐'],
-  ['💯', '一轮练习全部答对', '额外 +20 ⭐']
+  ['💯', '一轮练习全部答对', '额外 +20 ⭐'],
+
+  /* ---------------- 小游戏奖励 ---------------- */
+  ['🐹', '打地鼠过关 1 轮', '+3 ⭐'],
+  ['🛡️', '单词塔防守住基地 1 次', '+3 ⭐'],
+  ['🍎', '单词农场收获 1 个成熟种子', '+3 ⭐'],
+  ['💧', '单词农场每日浇灌 5 次', '+2 ⭐']
 ];
 function renderReward() {
   $('#stStreak').textContent = S.streak || 1;
@@ -2627,16 +2756,41 @@ function renderReward() {
   $('#rwTitle').textContent = S.stars + ' ⭐';
   var next = BADGES.filter(function (b) { return !S.badges[b.id]; })[0];
   $('#rwSub').textContent = next ? ('下一个徽章：' + next.n + '（' + next.d + '）') : '已集齐全部徽章，太厉害了！';
-  $('#bdgGrid').innerHTML = BADGES.map(function (b) {
+  /* 徽章：先学习徽章，再按小游戏分组展示，进度信息挂在小字说明后 */
+  var html = BADGES.map(function (b) {
     return '<div class="bitem' + (S.badges[b.id] ? '' : ' is-lock') + '">' +
       '<div class="badge badge--' + b.sh + '"><svg><use href="#i-star" style="color:#1F2D3D"/></svg></div>' +
       '<b>' + b.n + '</b><span>' + b.d + '</span></div>';
   }).join('');
+  $('#bdgGrid').innerHTML = html;
+  /* 小游戏徽章进度条（打地鼠 / 塔防 / 农场），让"还差多少"一眼看到 */
+  var gp = $('#gameProg');
+  if (gp) gp.innerHTML = gameProgHTML();
   $('#rewardRules').innerHTML = RULES.map(function (r) {
     return '<div class="row" style="cursor:default"><span class="row__ico" style="background:var(--c-cream);font-size:19px">' +
       r[0] + '</span><span class="row__t">' + r[1] + '</span><span class="row__v">' + r[2] + '</span></div>';
   }).join('');
   renderWish();
+}
+/* 小游戏进度概览：每行 = 一个游戏 + 累计成绩 + 已得徽章数 */
+function gameProgHTML() {
+  var G = gs();
+  var fun = function (cid) {
+    var got = BADGES.filter(function (b) { return b.gm === cid && S.badges[b.id]; }).length;
+    var all = BADGES.filter(function (b) { return b.gm === cid; }).length;
+    return got + '/' + all;
+  };
+  var rows = [
+    ['🐹', '打地鼠', '过关 ' + (G.whackWin || 0) + ' 轮 · 共玩 ' + (G.whack || 0) + ' 轮', fun('whack'), 'var(--c-yellow)'],
+    ['🛡️', '单词塔防', '守住基地 ' + (G.tdefWin || 0) + ' 次 · 共打 ' + (G.tdef || 0) + ' 局', fun('tdef'), 'var(--c-sky)'],
+    ['🍎', '单词农场', '累计收获 ' + (G.farm || 0) + ' 个 · 今日 ' + (G.farmHarvestDay || 0) + ' 个', fun('farm'), 'var(--c-mint)']
+  ];
+  return rows.map(function (r) {
+    return '<div class="gp-row" style="background:' + r[4] + '">' +
+      '<span class="gp-ico">' + r[0] + '</span>' +
+      '<div class="gp-txt"><b>' + r[1] + '</b><span>' + r[2] + '</span></div>' +
+      '<span class="gp-cnt">🏅 ' + r[3] + '</span></div>';
+  }).join('');
 }
 
 /* ---------------- 我的 ---------------- */
@@ -3477,6 +3631,8 @@ window.addEventListener('touchstart', function () {
 (function boot() {
   rollDay();
   if (!unlocked(deck())) S.deck = 'primary';
+  /* 兼容旧存档：已有的小游戏战绩也要能补发徽章（小游戏徽章没有弹窗，静默补发） */
+  try { checkBadges(true); } catch (e) {}
   renderHome(); renderDecks(); renderSwitch(); renderReward(); renderProfile();
   fcStart(S.deck);
   goTab('home');

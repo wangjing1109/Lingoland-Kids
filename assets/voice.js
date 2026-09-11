@@ -135,28 +135,67 @@
     });
   }
 
-  /* ---------------- 通道 4：系统 TTS ---------------- */
+  /* ---------------- 通道 4：系统 TTS ----------------
+     两个坑，之前都踩过，导致「有的单词没有播放」：
+     ① getVoices() 首次调用常返回空数组（语音列表是异步加载的），
+        必须等 voiceschanged / 轮询就绪后再判断，不能一上来就放弃。
+     ② 即便 voices 列表为空，直接 speak() 在多数浏览器仍能正常出声
+        （系统会用默认语音）。所以只有在真的抛错 / onerror 时才算失败，
+        不再因为「列表空」就掐死这条通道。 */
+  var voicesCache = null;   /* 已经拿到的语音列表 */
+  var voicesMiss = 0;       /* 连续取空的次数：确认没有语音后不再每次都干等 */
+  function waitVoices(cb) {
+    if (!('speechSynthesis' in w)) return cb([]);
+    if (voicesCache && voicesCache.length) return cb(voicesCache);
+    var vs = w.speechSynthesis.getVoices() || [];
+    if (vs.length) { voicesCache = vs; voicesMiss = 0; return cb(vs); }
+    var done = false, timer = null;
+    function finish(list) {
+      if (done) return;
+      done = true;
+      if (timer) clearInterval(timer);
+      try { w.speechSynthesis.onvoiceschanged = null; } catch (e) {}
+      if (list && list.length) { voicesCache = list; voicesMiss = 0; } else { voicesMiss++; }
+      cb(list || []);
+    }
+    try {
+      w.speechSynthesis.onvoiceschanged = function () { finish(w.speechSynthesis.getVoices() || []); };
+    } catch (e) {}
+    /* 兜底轮询：部分内核不派发 voiceschanged。
+       首次给足 2 秒（语音列表常在启动阶段异步加载），
+       确认取不到之后缩短到 300ms，避免每次发音都卡住游戏节奏。 */
+    var maxTries = voicesMiss >= 2 ? 3 : 20;
+    var tries = 0;
+    timer = setInterval(function () {
+      tries++;
+      var l = w.speechSynthesis.getVoices() || [];
+      if (l.length) finish(l);
+      else if (tries >= maxTries) finish([]);
+    }, 100);
+  }
   function playSS(text, rate, vol) {
     return new Promise(function (res, rej) {
       if (!('speechSynthesis' in w)) return rej(new Error('no ss'));
-      try {
-        var vs = w.speechSynthesis.getVoices() || [];
-        /* 关键：没有可用语音时果断放弃，不再伪播放 */
-        if (!vs.length) return rej(new Error('no voices'));
-        w.speechSynthesis.cancel();
-        var u = new w.SpeechSynthesisUtterance(String(text));
-        u.lang = 'en-US'; u.rate = rate; u.pitch = 1.1;
-        u.volume = (typeof vol === 'number' && vol >= 0 && vol <= 1) ? vol : 1;
-        for (var i = 0; i < vs.length; i++) {
-          if (/^en/i.test(vs[i].lang)) { u.voice = vs[i]; break; }
-        }
-        var done = false;
-        u.onend = function () { if (!done) { done = true; res(true); } };
-        u.onerror = function () { if (!done) { done = true; rej(new Error('ss error')); } };
-        w.speechSynthesis.speak(u);
-        channel = 'speechSynthesis';
-        setTimeout(function () { if (!done) { done = true; res(true); } }, 8000);
-      } catch (e) { rej(e); }
+      waitVoices(function (vs) {
+        try {
+          w.speechSynthesis.cancel();
+          var u = new w.SpeechSynthesisUtterance(String(text));
+          u.lang = 'en-US'; u.rate = rate; u.pitch = 1.1;
+          u.volume = (typeof vol === 'number' && vol >= 0 && vol <= 1) ? vol : 1;
+          /* 列表里有英文语音就用，没有就让系统挑默认的，不再因此放弃 */
+          var picked = null;
+          for (var i = 0; i < (vs || []).length; i++) {
+            if (/^en/i.test(vs[i].lang)) { picked = vs[i]; break; }
+          }
+          if (picked) u.voice = picked;
+          var done = false;
+          u.onend = function () { if (!done) { done = true; res(true); } };
+          u.onerror = function () { if (!done) { done = true; rej(new Error('ss error')); } };
+          w.speechSynthesis.speak(u);
+          channel = 'speechSynthesis';
+          setTimeout(function () { if (!done) { done = true; res(true); } }, 8000);
+        } catch (e) { rej(e); }
+      });
     });
   }
 
