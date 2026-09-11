@@ -106,6 +106,34 @@
      单词发音仅由系统 TTS（speechSynthesis）合成，见下方 speak()。 */
   /* 离线小工具：以下 WebAudio/<audio> 播放通道依赖 TTS 服务 与外部音源，
      在离线容器里不可用，已移除。发音统一走 speechSynthesis。 */
+
+  /* ---------------- 通道 3：在线真人发音（有道词典美音）----------------
+     微信内置浏览器（安卓 X5 内核）对系统 speechSynthesis 支持极差，
+     getVoices() 常返回空数组，导致单词在微信里完全哑火；
+     而 <audio> 播放远程 mp3 在微信里可靠可用。
+     因此在线时优先走真人发音，失败再回退系统 TTS（离线也走此路）。 */
+  function audioUrl(word) {
+    return 'https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(word) + '&type=2';
+  }
+  function playAudio(word, rate) {
+    return new Promise(function (res, rej) {
+      try {
+        var a = new Audio();
+        a.src = audioUrl(word);
+        a.preload = 'auto';
+        a.playbackRate = (rate && rate >= 0.5 && rate <= 2) ? rate : 1;
+        curEl = a;
+        var done = false;
+        a.onended = function () { if (!done) { done = true; res(true); } };
+        a.onerror = function () { if (!done) { done = true; rej(new Error('audio error')); } };
+        channel = 'audio-direct';
+        var pr = a.play();
+        if (pr && pr.catch) pr.catch(function () { if (!done) { done = true; rej(new Error('play rejected')); } });
+        setTimeout(function () { if (!done) { done = true; rej(new Error('audio timeout')); } }, 7000);
+      } catch (e) { rej(e); }
+    });
+  }
+
   /* ---------------- 通道 4：系统 TTS ---------------- */
   function playSS(text, rate) {
     return new Promise(function (res, rej) {
@@ -130,7 +158,7 @@
     });
   }
 
-  /* ---------------- 主入口（离线：仅系统 TTS） ---------------- */
+  /* ---------------- 主入口（在线优先真人发音，失败回退系统 TTS） ---------------- */
   function speak(text, rate) {
     var word = String(text || '').trim();
     if (!word) return Promise.resolve(false);
@@ -141,15 +169,25 @@
     var mySeq = ++seq;
     stop();
 
-    return playSS(word, rate).then(function (r) {
-      if (mySeq === seq && r === true) { emit('ok', { text: word, channel: channel }); return true; }
-      return false;
-    })['catch'](function (e) {
-      lastFailAt = Date.now();
-      channel = 'none';
-      emit('fail', { text: word, reasons: [String((e && e.message) || e)] });
-      return false;
-    });
+    /* 在线优先真人发音；失败（离线 / 弱网 / 微信拦截）回退系统 TTS；再失败才报异常 */
+    return playAudio(word, rate)
+      .then(function (r) {
+        if (mySeq === seq && r === true) { emit('ok', { text: word, channel: channel }); return true; }
+        return false;
+      })
+      ['catch'](function () {
+        stop();   /* 停掉可能仍在播放的真人音频，避免与系统 TTS 叠加出双声 */
+        return playSS(word, rate).then(function (r) {
+          if (mySeq === seq && r === true) { emit('ok', { text: word, channel: channel }); return true; }
+          return false;
+        });
+      })
+      ['catch'](function (e) {
+        lastFailAt = Date.now();
+        channel = 'none';
+        emit('fail', { text: word, reasons: [String((e && e.message) || e)] });
+        return false;
+      });
   }
 
   function stop() {

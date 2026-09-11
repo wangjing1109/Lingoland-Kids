@@ -52,26 +52,7 @@ function toast(msg, kind) {
 /* ---------------- 状态 ---------------- */
 var KEY = 'lk_v2';
 
-/* 激活码门禁：未激活时，点击任何功能按钮都会弹出激活窗。
-   激活码池共 20 个，一个码绑定一台设备（联网校验，见 /api/activate）。
-   更换 / 增减码请同时修改此处与 server.js 的 ACT_CODES。 */
-var ACT_CODES = [
-  'LL-3UZ5QR', 'LL-522YXE', 'LL-63NVXY', 'LL-C9NPEW', 'LL-GDZCCD',
-  'LL-K6A4WB', 'LL-KMC7TH', 'LL-N5MNFP', 'LL-NE7AHN', 'LL-NN6SEN',
-  'LL-NWTCWN', 'LL-P5V4RA', 'LL-P6Z7JS', 'LL-PUDWP2', 'LL-QFFAYY',
-  'LL-VQ59FY', 'LL-XSWJJR', 'LL-XZ6QFT', 'LL-YEGCT3', 'LL-YPKA9W'
-];
-
-/* 未激活时仍放行的动作：激活弹窗本身 + 各类「关闭 / 返回」按钮。
-   tab 切换走单独的 data-tab 分支，本就不在拦截范围内。 */
-var ACT_FREE = {
-  'act-ok': 1, 'act-later': 1, 'act-clear': 1,
-  'mask-close': 1, 'parent-close': 1, 'report-close': 1,
-  'ep-close': 1, 'share-close': 1, 'close': 1, 'sheet-close': 1, 'ov-close': 1,
-  'whack-quit': 1
-};
-
-/* 设备指纹：首次激活时生成并持久化，用于「一个激活码绑定一台设备」的联网校验 */
+/* 设备指纹（预留，当前未启用激活校验） */
 function devId() {
   if (!S.deviceId) {
     var g = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
@@ -127,7 +108,7 @@ function load() {
   return clone(DEF);
 }
 var S = load();
-S.activated = 1; /* 激活码门禁已取消：视为已激活，所有功能默认可用（含已有存档用户） */
+S.activated = 1; /* 功能默认全部开放（含已有存档用户） */
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
 
 function rollDay() {
@@ -2324,51 +2305,8 @@ function wishRedeem() {
   toast('愿望达成，已用 ' + S.wish.target + ' ⭐ 去兑现吧 🎉', 'ok');
 }
 
-/* ---------------- 激活码门禁 ---------------- */
-function openActivate() {
-  if (S.activated) return;
-  var err = $('#actErr'); if (err) err.textContent = '';
-  var inp = $('#actIn'); if (inp) inp.value = '';
-  openOv('#ovActivate');
-  if (inp) setTimeout(function () { try { inp.focus(); } catch (e) {} }, 260);
-}
-
 /* ---------------- 动作 ---------------- */
 var ACT = {
-  /* 未激活时点击任意功能按钮都会先落到这里 */
-  'act-ok': function () {
-    var inp = $('#actIn');
-    var v = (inp && inp.value || '').trim().toUpperCase().replace(/\s+/g, '');
-    var err = $('#actErr');
-    if (!v) { if (err) err.textContent = '请输入激活码'; return; }
-    /* 前端初筛：码不在池中直接拦截 */
-    if (ACT_CODES.indexOf(v) < 0) {
-      if (err) err.textContent = '激活码不正确，请重试';
-      if (inp) { inp.value = ''; try { inp.focus(); } catch (e) {} }
-      return;
-    }
-    if (err) err.textContent = '正在校验…';
-    var did = devId();
-    /* 兜底：纯静态部署（无后端 /api/activate）时，用本机一码一绑 */
-    function localFallback() {
-      S.usedCodes = S.usedCodes || [];
-      if (S.activated && S.activatedCode && S.activatedCode !== v) {
-        if (err) err.textContent = '本机已用其他激活码激活';
-        if (inp) { inp.value = ''; try { inp.focus(); } catch (e) {} }
-        return;
-      }
-      S.activated = 1; S.activatedCode = v;
-      if (S.usedCodes.indexOf(v) < 0) S.usedCodes.push(v);
-      save(); closeOv();
-      toast('已激活，开始学习吧 🎉', 'ok');
-    }
-    /* 离线小工具：无后端，直接走本机一码一绑校验 */
-    localFallback();
-  },
-  'act-later': function () { closeOv(); },
-  /* 家长重置（需在已激活后点「忘记激活码」才出现，便于二次使用） */
-  'act-clear': function () { closeOv(); }, /* 激活码已取消，清除/重置逻辑不再需要 */
-
   /* 打地鼠：选关 / 开始 / 结算 / 地鼠点击 */
   'whack-quit': function () {
     if (WH_TICK) { clearInterval(WH_TICK); WH_TICK = null; }
@@ -2663,7 +2601,7 @@ document.addEventListener('click', function (e) {
   var el = t.closest('[data-act]');
   if (!el) return;
   var act = el.dataset.act;
-  /* 激活码门禁已取消：所有功能默认开放，点击任意按钮不再弹出激活码 */
+  /* 所有功能默认开放，点击任意按钮直接进入对应功能 */
   var fn = ACT[act];
   if (fn) {
     e.preventDefault();
@@ -2677,7 +2615,6 @@ document.addEventListener('keydown', function (e) {
   var t = e.target;
   if (t && t.id === 'goalInput') setGoal(t.value);
   if (t && t.id === 'gateIn') ACT['gate-ok']();
-  if (t && t.id === 'actIn') ACT['act-ok']();
 });
 window.addEventListener('touchstart', function () {
   UON = true; pickVoice();
